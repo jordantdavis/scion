@@ -183,8 +183,10 @@ func (d DatabaseConfig) ConnMaxIdleTimeDuration() (time.Duration, error) {
 	return dur, nil
 }
 
-// DevAuthConfig holds development authentication settings.
+// DevAuthConfig holds authentication settings.
 type DevAuthConfig struct {
+	// Mode selects the exclusive human auth mode: "oauth" (default), "proxy", or "dev".
+	Mode string `json:"mode,omitempty" yaml:"mode,omitempty" koanf:"mode"`
 	// Enabled indicates whether development authentication is enabled.
 	// WARNING: Not for production use.
 	Enabled bool `json:"devMode" yaml:"devMode" koanf:"devMode"`
@@ -199,6 +201,47 @@ type DevAuthConfig struct {
 	// UserAccessMode controls how user access is evaluated at login time.
 	// Values: "open" (default), "domain_restricted", "invite_only".
 	UserAccessMode string `json:"userAccessMode" yaml:"userAccessMode" koanf:"userAccessMode"`
+	// Proxy holds proxy authentication settings (consulted when Mode == "proxy").
+	Proxy *ProxyAuthConfig `json:"proxy,omitempty" yaml:"proxy,omitempty" koanf:"proxy"`
+	// Transport holds transport-layer auth settings for agent outbound requests.
+	// Controls which transport tokens the hub issues to agents (dispatch + refresh).
+	Transport *TransportAuthConfig `json:"transport,omitempty" yaml:"transport,omitempty" koanf:"transport"`
+}
+
+// TransportAuthConfig holds transport-layer (outer/platform) auth settings.
+// This controls how agents authenticate to the platform guard (IAP or Cloud Run invoker)
+// when making outbound requests to the hub.
+type TransportAuthConfig struct {
+	// Mode selects the transport auth mode: "none" (default), "cloudrun_invoker", or "iap".
+	Mode string `json:"mode" yaml:"mode" koanf:"mode"`
+	// OIDCAudience is the OIDC audience for the transport token.
+	// For IAP: the IAP OAuth client ID. For cloudrun_invoker: the hub URL.
+	// Empty means derive from hub endpoint (cloudrun_invoker only).
+	OIDCAudience string `json:"oidcAudience" yaml:"oidcAudience" koanf:"oidcAudience"`
+	// PlatformAuthSA is the email of the dedicated service account used for
+	// transport-layer auth. The hub's runtime SA must hold serviceAccountTokenCreator
+	// on this SA to impersonate it via the IAM Credentials API.
+	PlatformAuthSA string `json:"platformAuthSA" yaml:"platformAuthSA" koanf:"platformAuthSA"`
+}
+
+// ProxyAuthConfig holds proxy authentication settings.
+type ProxyAuthConfig struct {
+	// Provider selects the proxy auth provider: "iap" or "header".
+	Provider string `json:"provider" yaml:"provider" koanf:"provider"`
+	// IAP holds Google IAP-specific settings.
+	IAP *IAPAuthConfig `json:"iap,omitempty" yaml:"iap,omitempty" koanf:"iap"`
+	// RequireTrustedProxyIP enables defense-in-depth IP allowlisting.
+	RequireTrustedProxyIP bool `json:"requireTrustedProxyIP,omitempty" yaml:"requireTrustedProxyIP,omitempty" koanf:"requireTrustedProxyIP"`
+}
+
+// IAPAuthConfig holds Google IAP-specific settings.
+type IAPAuthConfig struct {
+	// Audience is the expected audience claim — MANDATORY for IAP.
+	Audience string `json:"audience" yaml:"audience" koanf:"audience"`
+	// Issuer overrides the default IAP issuer (for testing).
+	Issuer string `json:"issuer,omitempty" yaml:"issuer,omitempty" koanf:"issuer"`
+	// JWKSURL overrides the default IAP JWKS URL (for testing).
+	JWKSURL string `json:"jwksURL,omitempty" yaml:"jwksURL,omitempty" koanf:"jwksURL"`
 }
 
 // OAuthProviderConfig holds OAuth credentials for a single provider.

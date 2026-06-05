@@ -87,6 +87,10 @@ type ServerConfig struct {
 	// other replica behind the load balancer. When empty, signing keys fall
 	// back to per-hub storage in the secret backend / store.
 	SharedSigningSecret string
+	// AuthMode is the exclusive human auth mode: "oauth" (default), "proxy", "dev".
+	AuthMode string
+	// ProxyAuthenticator is the configured proxy authenticator (when AuthMode == "proxy").
+	ProxyAuth ProxyAuthenticator
 	// TrustedProxies is a list of trusted proxy IPs/CIDRs for forwarded headers.
 	TrustedProxies []string
 	// Debug enables verbose debug logging.
@@ -150,6 +154,15 @@ type ServerConfig struct {
 	// GCPMintCapGlobal is the maximum total number of minted service accounts across all projects.
 	// Zero means unlimited (default).
 	GCPMintCapGlobal int
+	// TransportMode is the transport-layer auth mode: "none" (default), "cloudrun_invoker", "iap".
+	// Controls which transport tokens the hub issues to agents.
+	TransportMode string
+	// TransportAudience is the OIDC audience for transport tokens.
+	// For IAP: the IAP OAuth client ID. For cloudrun_invoker: the hub URL.
+	TransportAudience string
+	// TransportMinter mints transport-layer OIDC tokens for agents.
+	// Nil when TransportMode == "none" or unset.
+	TransportMinter TransportTokenMinter
 }
 
 // MaintenanceConfig holds configuration for routine maintenance operation executors.
@@ -532,6 +545,10 @@ type Server struct {
 	// Channel registry for external notification delivery (nil = disabled)
 	channelRegistry *ChannelRegistry
 
+	// Transport token minter for agent outbound auth (nil = transport auth disabled)
+	transportMinter   TransportTokenMinter
+	transportAudience string
+
 	// GCP token generator for agent identity (nil = GCP identity disabled)
 	gcpTokenGenerator GCPTokenGenerator
 
@@ -714,6 +731,15 @@ func New(cfg ServerConfig, s store.Store) (*Server, error) {
 		slog.Info("Broker HMAC authentication enabled")
 	}
 
+	// Store transport token minter if configured
+	if cfg.TransportMinter != nil {
+		srv.transportMinter = cfg.TransportMinter
+		srv.transportAudience = cfg.TransportAudience
+		slog.Info("Transport token minter configured",
+			"mode", cfg.TransportMode,
+			"audience", cfg.TransportAudience)
+	}
+
 	// Initialize control channel manager
 	srv.controlChannel = NewControlChannelManager(ControlChannelConfig{
 		PingInterval:   30 * time.Second,
@@ -800,15 +826,21 @@ func New(cfg ServerConfig, s store.Store) (*Server, error) {
 
 	// Build unified auth configuration
 	srv.authConfig = AuthConfig{
-		Mode:           "production",
-		DevAuthEnabled: cfg.DevAuthToken != "",
-		DevAuthToken:   cfg.DevAuthToken,
-		AgentTokenSvc:  srv.agentTokenService,
-		UserTokenSvc:   srv.userTokenService,
-		UATSvc:         srv.uatService,
-		TrustedProxies: cfg.TrustedProxies,
-		Debug:          cfg.Debug,
-		Logger:         srv.authLog,
+		Mode:               "production",
+		DevAuthEnabled:     cfg.DevAuthToken != "",
+		DevAuthToken:       cfg.DevAuthToken,
+		AgentTokenSvc:      srv.agentTokenService,
+		UserTokenSvc:       srv.userTokenService,
+		UATSvc:             srv.uatService,
+		TrustedProxies:     cfg.TrustedProxies,
+		ProxyAuthenticator: cfg.ProxyAuth,
+		AuthMode:           cfg.AuthMode,
+		Debug:              cfg.Debug,
+		Logger:             srv.authLog,
+	}
+	// Wire the proxy user provisioner (wraps provisionUser with 60s cache)
+	if cfg.ProxyAuth != nil {
+		srv.authConfig.ProxyUserProvisioner = MakeProxyUserProvisioner(srv)
 	}
 
 	// Initialize Cloud Logging query service (optional, gated on GCP project ID)
@@ -1537,6 +1569,11 @@ func (s *Server) CreateAuthenticatedDispatcher() *HTTPAgentDispatcher {
 	dispatcher.SetCrossNodeDeps(s.events, s.commandBus)
 	if s.dispatchMetrics != nil {
 		dispatcher.SetDispatchMetrics(s.dispatchMetrics)
+	}
+
+	// Configure transport token minter if available
+	if s.transportMinter != nil && s.transportAudience != "" {
+		dispatcher.SetTransportMinter(s.transportMinter, s.transportAudience)
 	}
 
 	return dispatcher

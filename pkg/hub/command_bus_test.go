@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build !no_sqlite
+
 package hub
 
 import (
@@ -473,4 +475,3 @@ func TestCommandBusIntegration_CloseIsIdempotent(t *testing.T) {
 	bus.Close()
 	bus.Close() // must not panic
 }
-

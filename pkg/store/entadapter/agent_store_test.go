@@ -288,6 +288,102 @@ func TestAgentStore_UpdateAgentStatus(t *testing.T) {
 	assert.ErrorIs(t, s.UpdateAgentStatus(ctx, uuid.NewString(), store.AgentStatusUpdate{Phase: "running"}), store.ErrNotFound)
 }
 
+// TestAgentStore_TerminalPhaseClearsStalledActivity verifies that transitioning
+// to a terminal phase (stopped/error) without an explicit activity clears a
+// lingering live activity such as "stalled", while preserving terminal
+// activities like "crashed".
+func TestAgentStore_TerminalPhaseClearsStalledActivity(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("stalled cleared on stop", func(t *testing.T) {
+		s, projectID := newTestAgentStore(t)
+		a := makeAgent(projectID, "stalled-stop")
+		a.Phase = "running"
+		a.Activity = "stalled"
+		require.NoError(t, s.CreateAgent(ctx, a))
+
+		require.NoError(t, s.UpdateAgentStatus(ctx, a.ID, store.AgentStatusUpdate{Phase: "stopped"}))
+		got, err := s.GetAgent(ctx, a.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "stopped", got.Phase)
+		assert.Equal(t, "", got.Activity, "stalled activity must be cleared on stop")
+	})
+
+	t.Run("stalled cleared on error", func(t *testing.T) {
+		s, projectID := newTestAgentStore(t)
+		a := makeAgent(projectID, "stalled-error")
+		a.Phase = "running"
+		a.Activity = "stalled"
+		require.NoError(t, s.CreateAgent(ctx, a))
+
+		require.NoError(t, s.UpdateAgentStatus(ctx, a.ID, store.AgentStatusUpdate{Phase: "error"}))
+		got, err := s.GetAgent(ctx, a.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "error", got.Phase)
+		assert.Equal(t, "", got.Activity, "stalled activity must be cleared on error")
+	})
+
+	t.Run("terminal activity preserved when explicitly provided", func(t *testing.T) {
+		s, projectID := newTestAgentStore(t)
+		a := makeAgent(projectID, "crashed-keep")
+		a.Phase = "running"
+		a.Activity = "stalled"
+		require.NoError(t, s.CreateAgent(ctx, a))
+
+		require.NoError(t, s.UpdateAgentStatus(ctx, a.ID, store.AgentStatusUpdate{
+			Phase:    "stopped",
+			Activity: "crashed",
+		}))
+		got, err := s.GetAgent(ctx, a.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "crashed", got.Activity, "explicit terminal activity must be kept")
+	})
+}
+
+// TestAgentStore_RunningPhaseClearsStaleMessage verifies that a (re)start to the
+// running phase clears a lingering terminal message (e.g. a crash message) and
+// any leftover stalled marker, while an explicit message in the same update is
+// preserved.
+func TestAgentStore_RunningPhaseClearsStaleMessage(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("crash message cleared on restart", func(t *testing.T) {
+		s, projectID := newTestAgentStore(t)
+		a := makeAgent(projectID, "crash-clear")
+		a.Phase = "error"
+		a.Activity = "crashed"
+		a.Message = "Agent crashed with exit code 1"
+		a.StalledFromActivity = "working"
+		require.NoError(t, s.CreateAgent(ctx, a))
+
+		require.NoError(t, s.UpdateAgentStatus(ctx, a.ID, store.AgentStatusUpdate{
+			Phase:    "running",
+			Activity: "working",
+		}))
+		got, err := s.GetAgent(ctx, a.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "running", got.Phase)
+		assert.Equal(t, "", got.Message, "stale crash message must be cleared on restart")
+		assert.Equal(t, "", got.StalledFromActivity, "stalled marker must be cleared on restart")
+	})
+
+	t.Run("explicit message preserved on restart", func(t *testing.T) {
+		s, projectID := newTestAgentStore(t)
+		a := makeAgent(projectID, "msg-keep")
+		a.Phase = "error"
+		a.Message = "Agent crashed with exit code 1"
+		require.NoError(t, s.CreateAgent(ctx, a))
+
+		require.NoError(t, s.UpdateAgentStatus(ctx, a.ID, store.AgentStatusUpdate{
+			Phase:   "running",
+			Message: "Restarting",
+		}))
+		got, err := s.GetAgent(ctx, a.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "Restarting", got.Message, "explicit message must be kept on restart")
+	})
+}
+
 func TestAgentStore_MarkStaleAgentsOffline(t *testing.T) {
 	ctx := context.Background()
 	s, projectID := newTestAgentStore(t)
@@ -361,6 +457,53 @@ func TestAgentStore_MarkStalledAgents(t *testing.T) {
 
 	gotActive, _ := s.GetAgent(ctx, active.ID)
 	assert.Equal(t, "executing", gotActive.Activity)
+}
+
+func TestAgentStore_FindAutoSuspendCandidates(t *testing.T) {
+	ctx := context.Background()
+	s, projectID := newTestAgentStore(t)
+
+	now := time.Now()
+	// Stall threshold (5m) + grace (5m) = 10m back.
+	activityThreshold := now.Add(-10 * time.Minute)
+	heartbeatRecency := now.Add(-2 * time.Minute)
+
+	// Stalled beyond grace with a recent heartbeat -> candidate.
+	candidate := makeAgent(projectID, "candidate")
+	candidate.Phase = "running"
+	candidate.Activity = "stalled"
+	candidate.LastActivityEvent = now.Add(-30 * time.Minute)
+	candidate.LastSeen = now
+	require.NoError(t, s.CreateAgent(ctx, candidate))
+
+	// Stalled but only within the grace window -> not yet a candidate.
+	withinGrace := makeAgent(projectID, "within-grace")
+	withinGrace.Phase = "running"
+	withinGrace.Activity = "stalled"
+	withinGrace.LastActivityEvent = now.Add(-7 * time.Minute)
+	withinGrace.LastSeen = now
+	require.NoError(t, s.CreateAgent(ctx, withinGrace))
+
+	// Stalled beyond grace but heartbeat is stale (offline) -> not a candidate.
+	offline := makeAgent(projectID, "offline")
+	offline.Phase = "running"
+	offline.Activity = "stalled"
+	offline.LastActivityEvent = now.Add(-30 * time.Minute)
+	offline.LastSeen = now.Add(-30 * time.Minute)
+	require.NoError(t, s.CreateAgent(ctx, offline))
+
+	// Stale but not yet marked stalled (still executing) -> not a candidate.
+	executing := makeAgent(projectID, "executing")
+	executing.Phase = "running"
+	executing.Activity = "executing"
+	executing.LastActivityEvent = now.Add(-30 * time.Minute)
+	executing.LastSeen = now
+	require.NoError(t, s.CreateAgent(ctx, executing))
+
+	got, err := s.FindAutoSuspendCandidates(ctx, activityThreshold, heartbeatRecency)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, candidate.ID, got[0].ID)
 }
 
 func TestAgentStore_PurgeDeletedAgents(t *testing.T) {

@@ -547,6 +547,30 @@ func (s *AgentStore) UpdateAgentStatus(ctx context.Context, id string, su store.
 		upd.SetStalledFromActivity("")
 		upd.SetLastActivityEvent(now)
 		upd.SetToolName(su.ToolName)
+	} else if su.Phase == "stopped" || su.Phase == "error" {
+		// Transitioning to a terminal phase without an explicit activity: clear
+		// any leftover live activity (e.g. a lingering "stalled" set by the
+		// platform) so a stopped/crashed agent never displays a stale activity.
+		// A terminal activity (crashed/limits_exceeded) carries information about
+		// HOW the agent stopped and is preserved.
+		if current.Activity != "" && !isTerminalActivity(current.Activity) {
+			upd.SetActivity("")
+			upd.SetStalledFromActivity("")
+			upd.SetToolName("")
+		}
+	}
+
+	// A (re)start — a transition from a terminal phase (stopped/error) to running
+	// — clears terminal remnants from the prior stop/crash: the stale crash/stop
+	// message and any leftover stalled marker. This is gated on the CURRENT phase
+	// being terminal so routine running→running heartbeats (which carry their own
+	// sticky-stalled rules in the broker handler) are left untouched. An explicit
+	// message in the same update (su.Message != "") wins and is set below.
+	if su.Phase == "running" && (current.Phase == "stopped" || current.Phase == "error") {
+		if su.Message == "" {
+			upd.SetMessage("")
+		}
+		upd.SetStalledFromActivity("")
 	}
 
 	if su.Message != "" {
@@ -697,6 +721,32 @@ func (s *AgentStore) MarkStalledAgents(ctx context.Context, activityThreshold, h
 		return nil, err
 	}
 	return updated, nil
+}
+
+// FindAutoSuspendCandidates returns running agents currently marked "stalled"
+// whose last activity event predates activityThreshold (the stall threshold
+// plus the auto-suspend grace) but whose heartbeat is still recent
+// (last_seen >= heartbeatRecency). These are agents whose container is still
+// alive and can be reclaimed via suspend. This is a read-only query; the caller
+// performs the actual suspension after verifying harness resume support.
+func (s *AgentStore) FindAutoSuspendCandidates(ctx context.Context, activityThreshold, heartbeatRecency time.Time) ([]store.Agent, error) {
+	candidates, err := s.client.Agent.Query().Where(
+		agent.LastActivityEventNotNil(),
+		agent.LastActivityEventLT(activityThreshold),
+		agent.LastSeenNotNil(),
+		agent.LastSeenGTE(heartbeatRecency),
+		agent.PhaseEQ("running"),
+		agent.ActivityEQ("stalled"),
+	).All(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]store.Agent, 0, len(candidates))
+	for _, a := range candidates {
+		result = append(result, *entAgentToStore(a))
+	}
+	return result, nil
 }
 
 // --- helpers ---

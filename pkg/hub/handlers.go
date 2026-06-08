@@ -36,6 +36,7 @@ import (
 	"github.com/GoogleCloudPlatform/scion/pkg/hub/githubapp"
 	"github.com/GoogleCloudPlatform/scion/pkg/hubclient"
 	"github.com/GoogleCloudPlatform/scion/pkg/messages"
+	scionruntime "github.com/GoogleCloudPlatform/scion/pkg/runtime"
 	"github.com/GoogleCloudPlatform/scion/pkg/secret"
 	"github.com/GoogleCloudPlatform/scion/pkg/storage"
 	"github.com/GoogleCloudPlatform/scion/pkg/store"
@@ -2396,7 +2397,9 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request, id s
 				return
 			}
 
-			if err := dispatcher.DispatchAgentStart(ctx, agent, ""); err != nil {
+			// Wake always resumes a suspended agent, so the harness must
+			// continue its prior session.
+			if err := dispatcher.DispatchAgentStart(ctx, agent, "", true); err != nil {
 				RuntimeError(w, "Failed to wake agent: "+err.Error())
 				return
 			}
@@ -2986,6 +2989,19 @@ func (s *Server) updateAgentStatus(w http.ResponseWriter, r *http.Request, id st
 func guardAgentPhaseTransition(agent *store.Agent, status *store.AgentStatusUpdate) {
 	currentPhase := state.Phase(agent.Phase)
 
+	// Guard 0: suspended is sticky against async status updates. When an agent
+	// is suspended, its container is being torn down, and the dying container's
+	// async sciontool /status POST (e.g. phase=stopped, activity=crashed) must
+	// not clobber the suspended phase — otherwise a subsequent /start would not
+	// see suspended and would skip the harness --continue (resume) flag.
+	// Only explicit start/stop lifecycle actions may leave the suspended phase,
+	// and those write phase directly without going through this guard.
+	if currentPhase == state.PhaseSuspended {
+		status.Phase = ""
+		status.Activity = ""
+		return
+	}
+
 	// Guard 1: reject phase regressions within the forward-progress lifecycle.
 	if status.Phase != "" {
 		newPhase := state.Phase(status.Phase)
@@ -3005,6 +3021,74 @@ func guardAgentPhaseTransition(agent *store.Agent, status *store.AgentStatusUpda
 			status.Phase = string(state.PhaseRunning)
 		}
 	}
+}
+
+// errHarnessNoResume is returned by suspendAgent when the agent's harness does
+// not support session resume, so suspending would strand it. The wrapped reason
+// carries harness-supplied context for the caller's error message.
+type errHarnessNoResume struct {
+	reason string
+}
+
+func (e *errHarnessNoResume) Error() string {
+	if e.reason != "" {
+		return e.reason
+	}
+	return "harness does not support session resume"
+}
+
+// harnessSupportsResume reports whether the agent's configured harness supports
+// resuming a session. An empty harness name (no applied config) is treated as
+// supported, matching the HTTP suspend handler's prior behavior of only
+// rejecting when a harness was explicitly resolved and declared SupportNo.
+func (s *Server) harnessSupportsResume(agent *store.Agent) (bool, string) {
+	harnessName := ""
+	if agent.AppliedConfig != nil {
+		harnessName = agent.AppliedConfig.HarnessConfig
+	}
+	if harnessName == "" {
+		return true, ""
+	}
+	caps := harness.New(harnessName).AdvancedCapabilities()
+	if caps.Resume.Support == api.SupportNo {
+		return false, caps.Resume.Reason
+	}
+	return true, ""
+}
+
+// suspendAgent performs the core SUSPEND action shared by the HTTP lifecycle
+// handler and the auto-suspend scheduler: it validates harness resume support,
+// syncs the workspace on stop, dispatches the container stop to the runtime
+// broker, persists phase=suspended (container_status=stopped, activity cleared),
+// and publishes the resulting status event. It returns *errHarnessNoResume when
+// the harness cannot resume so callers can decline to suspend.
+func (s *Server) suspendAgent(ctx context.Context, agent *store.Agent) error {
+	if ok, reason := s.harnessSupportsResume(agent); !ok {
+		return &errHarnessNoResume{reason: reason}
+	}
+
+	dispatcher := s.GetDispatcher()
+	if dispatcher != nil && agent.RuntimeBrokerID != "" {
+		s.syncWorkspaceOnStop(ctx, agent)
+		if err := dispatcher.DispatchAgentStop(ctx, agent); err != nil {
+			return err
+		}
+	}
+
+	newPhase := string(state.PhaseSuspended)
+	if err := s.store.UpdateAgentStatus(ctx, agent.ID, store.AgentStatusUpdate{
+		Phase:           newPhase,
+		ContainerStatus: "stopped",
+		Activity:        "",
+	}); err != nil {
+		return err
+	}
+
+	agent.Phase = newPhase
+	agent.ContainerStatus = "stopped"
+	agent.Activity = ""
+	s.events.PublishAgentStatus(ctx, agent)
+	return nil
 }
 
 func (s *Server) handleAgentLifecycle(w http.ResponseWriter, r *http.Request, id, action string) {
@@ -3030,7 +3114,9 @@ func (s *Server) handleAgentLifecycle(w http.ResponseWriter, r *http.Request, id
 	case api.AgentActionStart:
 		newPhase = string(state.PhaseRunning)
 		if dispatcher != nil && agent.RuntimeBrokerID != "" {
-			dispatchErr = dispatcher.DispatchAgentStart(ctx, agent, "")
+			// Resume the harness session only when the agent was suspended.
+			resume := agent.Phase == string(state.PhaseSuspended)
+			dispatchErr = dispatcher.DispatchAgentStart(ctx, agent, "", resume)
 			// DispatchAgentStart applies the broker response in-place;
 			// use the broker-reported phase if it was set.
 			if dispatchErr == nil && agent.Phase != "" {
@@ -3046,29 +3132,29 @@ func (s *Server) handleAgentLifecycle(w http.ResponseWriter, r *http.Request, id
 			dispatchErr = dispatcher.DispatchAgentStop(ctx, agent)
 		}
 	case api.AgentActionSuspend:
-		// Validate that the agent's harness supports session resume.
-		harnessName := ""
-		if agent.AppliedConfig != nil {
-			harnessName = agent.AppliedConfig.HarnessConfig
+		// Only running agents can be suspended via the HTTP lifecycle handler.
+		// (The auto-suspend scheduler calls suspendAgent directly and already
+		// restricts itself to running+stalled agents.)
+		if agent.Phase != string(state.PhaseRunning) {
+			writeError(w, http.StatusBadRequest, ErrCodeValidationError,
+				fmt.Sprintf("Cannot suspend agent in phase %q. Only running agents can be suspended.", agent.Phase), nil)
+			return
 		}
-		if harnessName != "" {
-			h := harness.New(harnessName)
-			caps := h.AdvancedCapabilities()
-			if caps.Resume.Support == api.SupportNo {
-				reason := caps.Resume.Reason
-				if reason == "" {
-					reason = "harness does not support session resume"
-				}
+		// Suspend is fully handled by the shared suspendAgent helper, which
+		// validates harness resume support, dispatches the stop, persists
+		// phase=suspended, and publishes the status event.
+		if err := s.suspendAgent(ctx, agent); err != nil {
+			var noResume *errHarnessNoResume
+			if errors.As(err, &noResume) {
 				writeError(w, http.StatusBadRequest, ErrCodeValidationError,
-					fmt.Sprintf("Cannot suspend agent: %s. Use 'stop' instead.", reason), nil)
+					fmt.Sprintf("Cannot suspend agent: %s. Use 'stop' instead.", noResume.Error()), nil)
 				return
 			}
+			RuntimeError(w, "Failed to dispatch to runtime broker: "+err.Error())
+			return
 		}
-		newPhase = string(state.PhaseSuspended)
-		if dispatcher != nil && agent.RuntimeBrokerID != "" {
-			s.syncWorkspaceOnStop(ctx, agent)
-			dispatchErr = dispatcher.DispatchAgentStop(ctx, agent)
-		}
+		writeJSON(w, http.StatusOK, agent)
+		return
 	case api.AgentActionRestart:
 		newPhase = string(state.PhaseRunning)
 		if dispatcher != nil && agent.RuntimeBrokerID != "" {
@@ -3082,7 +3168,8 @@ func (s *Server) handleAgentLifecycle(w http.ResponseWriter, r *http.Request, id
 				slog.Warn("Restart: stop dispatch failed, proceeding with start",
 					"agent_id", id, "error", stopErr)
 			}
-			dispatchErr = dispatcher.DispatchAgentStart(ctx, agent, "")
+			// Restart is stop + start: a fresh harness session, not a resume.
+			dispatchErr = dispatcher.DispatchAgentStart(ctx, agent, "", false)
 			// DispatchAgentStart applies the broker response in-place;
 			// use the broker-reported phase if it was set.
 			if dispatchErr == nil && agent.Phase != "" {
@@ -3100,9 +3187,10 @@ func (s *Server) handleAgentLifecycle(w http.ResponseWriter, r *http.Request, id
 	statusUpdate := store.AgentStatusUpdate{
 		Phase: newPhase,
 	}
-	// When stopping or suspending, also update container status so the hub immediately
+	// When stopping, also update container status so the hub immediately
 	// reflects the stopped state without waiting for the next heartbeat.
-	if action == api.AgentActionStop || action == api.AgentActionSuspend {
+	// (Suspend is handled earlier via suspendAgent and returns before here.)
+	if action == api.AgentActionStop {
 		statusUpdate.ContainerStatus = "stopped"
 		statusUpdate.Activity = ""
 	}
@@ -6343,8 +6431,20 @@ func (s *Server) handleBrokerHeartbeat(w http.ResponseWriter, r *http.Request, i
 			agentInTerminalPhase := agent.Phase == string(state.PhaseStopped) ||
 				agent.Phase == string(state.PhaseError)
 
+			// Suspended is sticky: a suspended agent's container is being torn
+			// down, so a racing heartbeat reporting stopped/crashed must not
+			// revert the suspended phase (which would defeat resume on the next
+			// /start). Like the terminal case, suppress any phase change and any
+			// terminal activity (crashed, etc.) from the heartbeat. Only explicit
+			// start/stop lifecycle actions may leave the suspended phase.
+			agentSuspended := agent.Phase == string(state.PhaseSuspended)
+
 			if agentHB.Phase != "" {
-				if agentInTerminalPhase {
+				if agentSuspended {
+					// Do not let the heartbeat change the phase or propagate
+					// terminal activities while suspended; leave statusUpdate.Phase
+					// unset so the hub's authoritative suspended phase is kept.
+				} else if agentInTerminalPhase {
 					// Keep the hub's authoritative terminal phase; only
 					// allow the heartbeat to confirm it (not revert it).
 					if agentHB.Phase == agent.Phase {
@@ -6365,6 +6465,25 @@ func (s *Server) handleBrokerHeartbeat(w http.ResponseWriter, r *http.Request, i
 					// must not move a running agent back to starting/etc.
 					hbPhase := state.Phase(agentHB.Phase)
 					curPhase := state.Phase(agent.Phase)
+
+					// Derive a crash from the container exit code even when the
+					// broker reports a plain "stopped" (its phase derivation is
+					// based on the container being exited, not on the exit code).
+					// A non-zero exit means the agent crashed → error, with the
+					// exit code recorded so the UI can show it. This works even
+					// if sciontool's own crash report never reached the hub.
+					if hbPhase == state.PhaseStopped {
+						if code, ok := scionruntime.ExitCodeFromContainerStatus(agentHB.ContainerStatus); ok && code != 0 {
+							hbPhase = state.PhaseError
+							agentHB.Phase = string(state.PhaseError)
+							c := code
+							statusUpdate.ExitCode = &c
+							if statusUpdate.Message == "" {
+								statusUpdate.Message = fmt.Sprintf("Agent crashed with exit code %d", code)
+							}
+						}
+					}
+
 					if curPhase.IsActivePhase() && hbPhase.IsActivePhase() &&
 						hbPhase.Ordinal() < curPhase.Ordinal() {
 						// Suppress the regression — keep the hub's phase.
@@ -6391,20 +6510,31 @@ func (s *Server) handleBrokerHeartbeat(w http.ResponseWriter, r *http.Request, i
 						}
 					}
 				}
-			} else if !agentInTerminalPhase {
+			} else if !agentInTerminalPhase && !agentSuspended {
 				// Legacy path: no structured fields, derive from ContainerStatus
 				// Derive phase from container status to ensure agents
 				// registered via sync (not started via hub) get proper state.
 				// Terminal container states (exited/stopped) override agent phase.
-				// Skipped when agent is already in a terminal phase to avoid
-				// reverting an authoritative hub-set state.
+				// Skipped when agent is already in a terminal phase or suspended
+				// to avoid reverting an authoritative hub-set state.
 				if agentHB.ContainerStatus != "" {
 					containerStatusLower := strings.ToLower(agentHB.ContainerStatus)
 					switch {
 					case strings.HasPrefix(containerStatusLower, "up") || containerStatusLower == "running":
 						statusUpdate.Phase = string(state.PhaseRunning)
 					case strings.HasPrefix(containerStatusLower, "exited") || containerStatusLower == "stopped":
-						statusUpdate.Phase = string(state.PhaseStopped)
+						// A non-zero exit code means the agent crashed → error
+						// (restartable); a zero/absent code is a clean stop.
+						if code, ok := scionruntime.ExitCodeFromContainerStatus(agentHB.ContainerStatus); ok && code != 0 {
+							statusUpdate.Phase = string(state.PhaseError)
+							c := code
+							statusUpdate.ExitCode = &c
+							if statusUpdate.Message == "" {
+								statusUpdate.Message = fmt.Sprintf("Agent crashed with exit code %d", code)
+							}
+						} else {
+							statusUpdate.Phase = string(state.PhaseStopped)
+						}
 						statusUpdate.Activity = ""
 					case containerStatusLower == "created":
 						// Don't downgrade a running agent to provisioning — the
@@ -9119,7 +9249,10 @@ func (s *Server) handleExistingAgent(
 			existingAgent.AppliedConfig.Attach = req.Attach
 		}
 
-		if err := dispatcher.DispatchAgentStart(ctx, existingAgent, req.Task); err != nil {
+		// This branch only runs for suspended agents, so resume the harness
+		// session (Claude --continue) rather than starting fresh.
+		resume := existingAgent.Phase == string(state.PhaseSuspended)
+		if err := dispatcher.DispatchAgentStart(ctx, existingAgent, req.Task, resume); err != nil {
 			RuntimeError(w, "Failed to resume suspended agent: "+err.Error())
 			return existingAgentErrored
 		}
@@ -9170,7 +9303,9 @@ func (s *Server) handleExistingAgent(
 				existingAgent.AppliedConfig.Attach = req.Attach
 			}
 
-			if err := dispatcher.DispatchAgentStart(ctx, existingAgent, req.Task); err != nil {
+			// A stopped agent restarts with a fresh harness session even when
+			// resume was requested (mirrors the local CLI's effectiveResume).
+			if err := dispatcher.DispatchAgentStart(ctx, existingAgent, req.Task, false); err != nil {
 				RuntimeError(w, "Failed to resume stopped agent: "+err.Error())
 				return existingAgentErrored
 			}
@@ -9239,7 +9374,8 @@ func (s *Server) handleExistingAgent(
 
 		// Dispatch start action — DispatchAgentStart applies the broker's
 		// response (status, container info) onto existingAgent in-place.
-		if err := dispatcher.DispatchAgentStart(ctx, existingAgent, req.Task); err != nil {
+		// A created/provisioning agent has no prior session to resume.
+		if err := dispatcher.DispatchAgentStart(ctx, existingAgent, req.Task, false); err != nil {
 			RuntimeError(w, "Failed to start agent: "+err.Error())
 			return existingAgentErrored
 		}

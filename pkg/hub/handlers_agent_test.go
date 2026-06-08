@@ -781,7 +781,7 @@ func (d *createAgentDispatcher) DispatchAgentProvision(_ context.Context, agent 
 	agent.Phase = string(state.PhaseCreated)
 	return nil
 }
-func (d *createAgentDispatcher) DispatchAgentStart(_ context.Context, _ *store.Agent, _ string) error {
+func (d *createAgentDispatcher) DispatchAgentStart(_ context.Context, _ *store.Agent, _ string, _ bool) error {
 	d.startCalled = true
 	return nil
 }
@@ -3094,6 +3094,85 @@ func TestBrokerHeartbeat_PublishesActivitySSE(t *testing.T) {
 	}
 }
 
+// TestBrokerHeartbeat_ContainerExitedDerivesCrash verifies that a broker
+// heartbeat reporting a non-zero container exit code is mapped to PhaseError
+// (with the exit code recorded), while a clean (zero) exit maps to PhaseStopped.
+// This works even if sciontool's own crash report never reached the hub.
+func TestBrokerHeartbeat_ContainerExitedDerivesCrash(t *testing.T) {
+	cases := []struct {
+		name            string
+		containerStatus string
+		hbPhase         string
+		wantPhase       string
+		wantMessage     string
+	}{
+		{
+			name:            "non-zero exit -> error",
+			containerStatus: "Exited (137) 2 minutes ago",
+			hbPhase:         string(state.PhaseStopped),
+			wantPhase:       string(state.PhaseError),
+			wantMessage:     "Agent crashed with exit code 137",
+		},
+		{
+			name:            "zero exit -> stopped",
+			containerStatus: "Exited (0) 3 hours ago",
+			hbPhase:         string(state.PhaseStopped),
+			wantPhase:       string(state.PhaseStopped),
+		},
+		{
+			name:            "non-zero exit, legacy path (no structured phase) -> error",
+			containerStatus: "Exited (1) 5 seconds ago",
+			hbPhase:         "",
+			wantPhase:       string(state.PhaseError),
+			wantMessage:     "Agent crashed with exit code 1",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, s := testServer(t)
+			ctx := context.Background()
+
+			project := &store.Project{ID: tid("project-hb-crash"), Name: "P", Slug: "hb-crash-project"}
+			require.NoError(t, s.CreateProject(ctx, project))
+			broker := &store.RuntimeBroker{
+				ID: tid("broker-hb-crash"), Name: "B", Slug: "hb-crash-broker",
+				Status: store.BrokerStatusOnline,
+			}
+			require.NoError(t, s.CreateRuntimeBroker(ctx, broker))
+			agent := &store.Agent{
+				ID: tid("agent-hb-crash"), Slug: "agent-hb-crash-slug", Name: "A",
+				ProjectID: project.ID, RuntimeBrokerID: broker.ID,
+				Phase: string(state.PhaseRunning),
+			}
+			require.NoError(t, s.CreateAgent(ctx, agent))
+
+			heartbeat := brokerHeartbeatRequest{
+				Status: "online",
+				Projects: []brokerProjectHeartbeat{{
+					ProjectID:  project.ID,
+					AgentCount: 1,
+					Agents: []brokerAgentHeartbeat{{
+						Slug:            agent.Slug,
+						Phase:           tc.hbPhase,
+						ContainerStatus: tc.containerStatus,
+					}},
+				}},
+			}
+
+			rec := doRequest(t, srv, http.MethodPost, "/api/v1/runtime-brokers/"+broker.ID+"/heartbeat", heartbeat)
+			assert.Equal(t, http.StatusOK, rec.Code)
+
+			updated, err := s.GetAgent(ctx, agent.ID)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantPhase, updated.Phase)
+			if tc.wantMessage != "" {
+				assert.Equal(t, tc.wantMessage, updated.Message)
+			}
+		})
+	}
+}
+
 func TestBrokerHeartbeat_RepeatedActivityDoesNotRefreshLastActivityEvent(t *testing.T) {
 	srv, s := testServer(t)
 	ctx := context.Background()
@@ -4869,4 +4948,137 @@ func TestBrokerHeartbeat_RejectsPhaseRegression(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, string(state.PhaseRunning), updated.Phase,
 		"heartbeat should not regress phase from running to starting")
+}
+
+// TestAgentStatusUpdate_SuspendedIsStickyAgainstStatusPost verifies that a
+// dying container's async sciontool /status POST (phase=stopped,
+// activity=crashed) cannot clobber a suspended agent's phase. If it did, a
+// subsequent /start would not see suspended and would skip the harness
+// --continue (resume) flag.
+func TestAgentStatusUpdate_SuspendedIsStickyAgainstStatusPost(t *testing.T) {
+	srv, s := testServer(t)
+	ctx := context.Background()
+
+	project := &store.Project{ID: tid("proj-susp-status"), Name: "Suspend Status Project", Slug: "susp-status-project"}
+	require.NoError(t, s.CreateProject(ctx, project))
+
+	agent := &store.Agent{
+		ID: tid("agent-susp-status"), Slug: "susp-status-slug", Name: "Suspend Status Agent",
+		ProjectID: project.ID, Phase: string(state.PhaseSuspended),
+	}
+	require.NoError(t, s.CreateAgent(ctx, agent))
+
+	tokenSvc := srv.GetAgentTokenService()
+	require.NotNil(t, tokenSvc)
+	token, err := tokenSvc.GenerateAgentToken(agent.ID, project.ID, []AgentTokenScope{ScopeAgentStatusUpdate}, nil)
+	require.NoError(t, err)
+
+	// The dying container reports stopped+crashed via the async status POST.
+	status := store.AgentStatusUpdate{
+		Phase:    string(state.PhaseStopped),
+		Activity: string(state.ActivityCrashed),
+	}
+	body, _ := json.Marshal(status)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/"+agent.ID+"/status", bytes.NewReader(body))
+	req.Header.Set("X-Scion-Agent-Token", token)
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// Phase should remain suspended and no crashed activity should stick.
+	updated, err := s.GetAgent(ctx, agent.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(state.PhaseSuspended), updated.Phase,
+		"suspended phase must be sticky against async status POST")
+	assert.NotEqual(t, string(state.ActivityCrashed), updated.Activity,
+		"crashed activity must not stick on a suspended agent")
+}
+
+// TestBrokerHeartbeat_DoesNotRevertSuspendedAgent verifies that a racing broker
+// heartbeat reporting stopped/crashed for a suspended agent leaves it suspended.
+func TestBrokerHeartbeat_DoesNotRevertSuspendedAgent(t *testing.T) {
+	srv, s := testServer(t)
+	ctx := context.Background()
+
+	project := &store.Project{ID: tid("proj-susp-hb"), Name: "Suspend HB Project", Slug: "susp-hb-project"}
+	require.NoError(t, s.CreateProject(ctx, project))
+
+	broker := &store.RuntimeBroker{
+		ID: tid("broker-susp-hb"), Name: "Suspend HB Broker", Slug: "susp-hb-broker",
+		Status: store.BrokerStatusOnline,
+	}
+	require.NoError(t, s.CreateRuntimeBroker(ctx, broker))
+
+	agent := &store.Agent{
+		ID: tid("agent-susp-hb"), Slug: "susp-hb-slug", Name: "Suspend HB Agent",
+		ProjectID: project.ID, RuntimeBrokerID: broker.ID,
+		Phase: string(state.PhaseSuspended),
+	}
+	require.NoError(t, s.CreateAgent(ctx, agent))
+
+	// The dying container's broker reports stopped+crashed via heartbeat.
+	hb := brokerHeartbeatRequest{
+		Status: "online",
+		Projects: []brokerProjectHeartbeat{{
+			ProjectID:  project.ID,
+			AgentCount: 1,
+			Agents: []brokerAgentHeartbeat{{
+				Slug:            agent.Slug,
+				Phase:           string(state.PhaseStopped),
+				Activity:        string(state.ActivityCrashed),
+				ContainerStatus: "exited",
+			}},
+		}},
+	}
+	rec := doRequest(t, srv, http.MethodPost, "/api/v1/runtime-brokers/"+broker.ID+"/heartbeat", hb)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// Agent should remain suspended — heartbeat must not revert the suspended phase.
+	updated, err := s.GetAgent(ctx, agent.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(state.PhaseSuspended), updated.Phase,
+		"heartbeat should not revert suspended phase")
+	assert.NotEqual(t, string(state.ActivityCrashed), updated.Activity,
+		"heartbeat should not stick crashed activity on a suspended agent")
+}
+
+// TestAgentLifecycleSuspend_RejectsNonRunningAgent verifies that the suspend
+// lifecycle action returns HTTP 400 for an agent that is not in the running
+// phase, and does not change the agent's phase.
+func TestAgentLifecycleSuspend_RejectsNonRunningAgent(t *testing.T) {
+	srv, s := testServer(t)
+	ctx := context.Background()
+
+	project := &store.Project{
+		ID:   tid("proj-susp-guard"),
+		Name: "Suspend Guard Project",
+		Slug: "susp-guard-project",
+	}
+	require.NoError(t, s.CreateProject(ctx, project))
+
+	agent := &store.Agent{
+		ID:        tid("agent-susp-guard"),
+		Slug:      "susp-guard-slug",
+		Name:      "Suspend Guard Agent",
+		ProjectID: project.ID,
+		Phase:     string(state.PhaseStopped),
+	}
+	require.NoError(t, s.CreateAgent(ctx, agent))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/"+agent.ID+"/suspend", nil)
+	req.Header.Set("Authorization", "Bearer "+testDevToken)
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code,
+		"suspending a non-running agent should return 400")
+
+	// Phase must be unchanged.
+	updated, err := s.GetAgent(ctx, agent.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(state.PhaseStopped), updated.Phase,
+		"rejected suspend must not change the agent's phase")
 }

@@ -1143,6 +1143,10 @@ func (s *Server) startAgent(w http.ResponseWriter, r *http.Request, id, projectI
 		// share a single git checkout instead of being given a worktree, and
 		// without this flag the broker would create a worktree on restart.
 		SharedWorkspace bool `json:"sharedWorkspace,omitempty"`
+		// Resume requests harness session continuation (e.g. Claude
+		// --continue). The hub is the source of truth and sets this from the
+		// agent's stored phase; when unset we fall back to GetSavedPhase below.
+		Resume bool `json:"resume,omitempty"`
 	}
 	if r.Body != nil && r.ContentLength != 0 {
 		if err := json.NewDecoder(r.Body).Decode(&startReq); err != nil {
@@ -1163,6 +1167,13 @@ func (s *Server) startAgent(w http.ResponseWriter, r *http.Request, id, projectI
 		}
 	}
 
+	// Parity with the create path: populate the dedicated AgentToken field from
+	// the hub-minted token in ResolvedEnv so buildStartContext treats it as an
+	// explicit token rather than relying on the resolvedEnv-kept fallback. The
+	// precedence in buildStartContext step 3 keeps this token regardless, but
+	// setting it here makes the start path behave like create.
+	startContextAgentToken := startReq.ResolvedEnv["SCION_AUTH_TOKEN"]
+
 	sc, err := s.buildStartContext(ctx, startContextInputs{
 		Name:            id,
 		ProjectPath:     startReq.ProjectPath,
@@ -1171,6 +1182,7 @@ func (s *Server) startAgent(w http.ResponseWriter, r *http.Request, id, projectI
 		ResolvedEnv:     startReq.ResolvedEnv,
 		ResolvedSecrets: startReq.ResolvedSecrets,
 		SharedDirs:      startReq.SharedDirs,
+		AgentToken:      startContextAgentToken,
 		HTTPRequest:     r,
 	})
 	if err != nil {
@@ -1206,8 +1218,13 @@ func (s *Server) startAgent(w http.ResponseWriter, r *http.Request, id, projectI
 		opts.Profile = agent.GetSavedProfile(id, opts.ProjectPath)
 	}
 
-	// If the agent was suspended, resume with harness session preservation.
-	if opts.ProjectPath != "" {
+	// The hub is the source of truth for resume intent: when it sets
+	// req.Resume the harness must continue its prior session. We still fall
+	// back to reading the saved phase from disk when the hub did not specify
+	// resume (e.g. the local CLI path, which does not send this flag).
+	if startReq.Resume {
+		opts.Resume = true
+	} else if opts.ProjectPath != "" {
 		savedPhase := agent.GetSavedPhase(id, opts.ProjectPath)
 		if savedPhase == string(state.PhaseSuspended) {
 			opts.Resume = true

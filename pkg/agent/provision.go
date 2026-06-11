@@ -763,6 +763,116 @@ func ProvisionAgent(ctx context.Context, agentName string, templateName string, 
 	}
 	util.Debugf("provision: home/skills copy completed in %s", time.Since(homeCopyStart))
 
+	// Step 3d: Resolve and install referenced skills from skill bank
+	var resolvedSkillsRecord *SkillResolutionRecord
+	if len(finalScionCfg.Skills) > 0 {
+		resolver := SkillResolverFromContext(ctx)
+		if resolver == nil {
+			// S1: Fail closed for required skills
+			requiredURIs := collectRequiredSkillURIs(finalScionCfg.Skills)
+			if len(requiredURIs) > 0 {
+				return "", "", nil, fmt.Errorf(
+					"skill resolution failed: %d required skill(s) declared but no skill resolver available\n"+
+						"  skills: %s\n"+
+						"  hint: connect to a Hub or mark skills as optional",
+					len(requiredURIs), strings.Join(requiredURIs, ", "))
+			}
+			util.Debugf("provision: %d optional skill(s) declared but no resolver available, skipping", len(finalScionCfg.Skills))
+		} else {
+			projectID := ResolveProjectIDFromContext(ctx)
+			if projectID == "" {
+				projectID, _ = config.ReadProjectID(projectDir)
+			}
+			resolveOpts := ResolveOpts{
+				ProjectID: projectID,
+				UserID:    ResolveUserIDFromContext(ctx),
+			}
+
+			result, err := resolver.Resolve(ctx, finalScionCfg.Skills, resolveOpts)
+			if err != nil {
+				return "", "", nil, fmt.Errorf("skill resolution failed: %w", err)
+			}
+
+			// S1 completeness: build requested URI set
+			requestedURIs := make(map[string]*api.SkillReference, len(finalScionCfg.Skills))
+			for i := range finalScionCfg.Skills {
+				requestedURIs[finalScionCfg.Skills[i].URI] = &finalScionCfg.Skills[i]
+			}
+
+			resolvedURIs := make(map[string]bool)
+			errorURIs := make(map[string]bool)
+
+			for _, rs := range result.Resolved {
+				if _, ok := requestedURIs[rs.URI]; !ok {
+					return "", "", nil, fmt.Errorf(
+						"resolver returned unrequested skill %q — possible resolver bug or injection", rs.URI)
+				}
+				if resolvedURIs[rs.URI] {
+					return "", "", nil, fmt.Errorf(
+						"resolver returned duplicate resolved skill %q", rs.URI)
+				}
+				resolvedURIs[rs.URI] = true
+			}
+
+			for _, re := range result.Errors {
+				errorURIs[re.URI] = true
+				ref := requestedURIs[re.URI]
+				if ref == nil || !ref.Optional {
+					return "", "", nil, fmt.Errorf(
+						"required skill %q could not be resolved: %s", re.URI, re.Message)
+				}
+				util.Debugf("provision: optional skill %q skipped: %s", re.URI, re.Message)
+			}
+
+			// S1: verify every requested URI has an outcome
+			for uri, ref := range requestedURIs {
+				if !resolvedURIs[uri] && !errorURIs[uri] {
+					if ref.Optional {
+						util.Debugf("provision: optional skill %q missing from resolver response, skipping", uri)
+					} else {
+						return "", "", nil, fmt.Errorf(
+							"required skill %q missing from resolver response — S1 fail-closed", uri)
+					}
+				}
+			}
+
+			// Capture local skills before installing registry skills (M2: avoid duplication)
+			var localSkills []SkillResolutionEntry
+			if skillsDir != "" {
+				localSkills = enumerateLocalSkills(agentHome, skillsDir)
+			}
+
+			if len(result.Resolved) > 0 {
+				if skillsDir == "" {
+					return "", "", nil, fmt.Errorf("harness does not support skills (no skills directory configured)")
+				}
+				skillsDest := filepath.Join(agentHome, skillsDir)
+				record, err := installResolvedSkills(ctx, result.Resolved, skillsDest, agentHome)
+				if err != nil {
+					return "", "", nil, fmt.Errorf("skill installation failed: %w", err)
+				}
+				record.Resolver = resolverName(resolver)
+				record.Skills = append(localSkills, record.Skills...)
+				resolvedSkillsRecord = record
+			}
+		}
+	}
+
+	// Write resolution record (S4)
+	if resolvedSkillsRecord != nil {
+		recordPath := filepath.Join(agentHome, ".scion", "resolved-skills.json")
+		if err := writeResolutionRecord(recordPath, resolvedSkillsRecord); err != nil {
+			util.Debugf("provision: failed to write resolution record: %v", err)
+		}
+
+		// Stage resolved-skills.json for container-script harnesses
+		recordData, _ := json.MarshalIndent(resolvedSkillsRecord, "", "  ")
+		inputPath := filepath.Join(agentHome, ".scion", "harness", "inputs", "resolved-skills.json")
+		if info, err := os.Stat(filepath.Dir(inputPath)); err == nil && info.IsDir() {
+			_ = os.WriteFile(inputPath, recordData, 0644)
+		}
+	}
+
 	// Step 4: Inject agent instructions
 
 	// Determine whether inline config provided content directly (already resolved).

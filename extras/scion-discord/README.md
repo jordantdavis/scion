@@ -66,7 +66,7 @@ sudo install scion-plugin-discord /usr/local/bin/
 
 ### 4. Configure settings.yaml
 
-Add the Discord plugin to the hub's `settings.yaml`:
+Add the Discord plugin to the hub's `settings.yaml` (note that `plugins` MUST be nested under the `server` block):
 
 ```yaml
 server:
@@ -75,26 +75,26 @@ server:
     types:
       - discord
 
-plugins:
-  broker:
-    discord:
-      config:
-        bot_token: "your-bot-token"
-        application_id: "your-application-id"
-        public_key: "your-public-key"
+  plugins:
+    broker:
+      discord:
+        config:
+          bot_token: "your-bot-token"
+          application_id: "your-application-id"
+          public_key: "your-public-key"
 
-        # Guild-scoped command registration (instant updates, good for dev).
-        # Leave empty for global commands (can take up to 1 hour to propagate).
-        guild_id: ""
+          # Guild-scoped command registration (instant updates, good for dev).
+          # Leave empty for global commands (can take up to 1 hour to propagate).
+          guild_id: ""
 
-        # SQLite database for channel links, user mappings, and state.
-        # Default: discord.db (relative to hub working directory).
-        db_path: /var/lib/scion/discord.db
+          # SQLite database for channel links, user mappings, and state.
+          # Default: discord.db (relative to hub working directory).
+          db_path: /var/lib/scion/discord.db
 
-        # Optional tuning.
-        # send_queue_size: 100     # max queued messages per channel
-        # send_min_delay: 50ms     # minimum delay between sends (rate limiting)
-        # agent_cache_ttl: 5m      # how long to cache agent lists from hub
+          # Optional tuning.
+          # send_queue_size: 100     # max queued messages per channel
+          # send_min_delay: 50ms     # minimum delay between sends (rate limiting)
+          # agent_cache_ttl: 5m      # how long to cache agent lists from hub
 ```
 
 ### 5. Start the Hub
@@ -243,18 +243,18 @@ server:
       - broker-log
       - discord
 
-plugins:
-  broker:
-    broker-log:
-      self_managed: true
-      address: "localhost:9091"
-    discord:
-      config:
-        bot_token: "MTIzNDU2Nzg5.example.token"
-        application_id: "123456789012345678"
-        public_key: "abcdef1234567890abcdef1234567890abcdef1234567890"
-        guild_id: "987654321098765432"
-        db_path: /var/lib/scion/discord.db
+  plugins:
+    broker:
+      broker-log:
+        self_managed: true
+        address: "localhost:9091"
+      discord:
+        config:
+          bot_token: "MTIzNDU2Nzg5.example.token"
+          application_id: "123456789012345678"
+          public_key: "abcdef1234567890abcdef1234567890abcdef1234567890"
+          guild_id: "987654321098765432"
+          db_path: /var/lib/scion/discord.db
 ```
 
 ## Architecture
@@ -293,3 +293,21 @@ Discord Gateway API
 - **SQLite state** persists channel links, user mappings, conversation contexts, notification preferences, and pending ask-user callbacks across restarts.
 - **Send queue** uses per-channel worker goroutines with configurable rate limiting to avoid Discord 429 errors.
 - **Webhook identity** gives each agent a unique name and RoboHash avatar in Discord, managed per-channel with automatic recreation if deleted.
+
+## Troubleshooting
+
+### Disallowed Gateway Intents (Error 4014)
+
+If the hub logs contain an error similar to:
+```text
+websocket: close 4014: Disallowed intent(s).
+```
+This means the bot has not been granted the required privileged intents in the Discord Developer Portal.
+
+**Solution:**
+1. Navigate to [discord.com/developers/applications](https://discord.com/developers/applications) and select your application.
+2. Go to the **Bot** tab on the left-side menu.
+3. Scroll down to the **Privileged Gateway Intents** section.
+4. Enable both **Server Members Intent** and **Message Content Intent**.
+5. Click **Save Changes** and restart your Scion hub server (`sudo systemctl restart scion-hub`).
+

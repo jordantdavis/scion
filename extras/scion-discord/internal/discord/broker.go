@@ -455,14 +455,20 @@ func (b *DiscordBroker) Publish(ctx context.Context, topic string, msg *messages
 		return nil
 	}
 
+	// Always suppress commentary messages — Discord has no user toggle for this.
+	if msg != nil && msg.Type == messages.TypeAssistantReply {
+		b.log.Debug("Filtering assistant-reply message (commentary always suppressed in Discord)")
+		return nil
+	}
+
 	// Determine whether this message should be sent via webhook (agent identity)
 	// or via the bot API. Webhook routing applies when:
 	//   - Sender is an agent (starts with "agent:")
-	//   - Message type is TypeAssistantReply or TypeInstruction
+	//   - Message type is TypeInstruction
 	// State changes and input-needed messages keep the bot identity (embed style).
 	useWebhook := webhooks != nil &&
 		strings.HasPrefix(msg.Sender, "agent:") &&
-		(msg.Type == messages.TypeAssistantReply || msg.Type == messages.TypeInstruction)
+		msg.Type == messages.TypeInstruction
 
 	// Extract agent slug from sender for webhook username.
 	senderSlug := agentSlug
@@ -488,8 +494,7 @@ func (b *DiscordBroker) Publish(ctx context.Context, topic string, msg *messages
 		strings.HasPrefix(msg.Sender, "agent:") &&
 		strings.HasPrefix(msg.Recipient, "agent:")
 	isStateChange := msg != nil && msg.Type == messages.TypeStateChange
-	isAssistantReply := msg != nil && msg.Type == messages.TypeAssistantReply
-	needsFilter := isAgentToAgent || isStateChange || isAssistantReply
+	needsFilter := isAgentToAgent || isStateChange
 
 	// Send to each target channel.
 	var errs []error
@@ -503,10 +508,6 @@ func (b *DiscordBroker) Publish(ctx context.Context, topic string, msg *messages
 				}
 				if isStateChange && !link.ShowStateChanges {
 					b.log.Debug("Filtering state change notification", "channel_id", channelID)
-					continue
-				}
-				if isAssistantReply && !link.ShowAssistantReply {
-					b.log.Debug("Filtering assistant-reply message", "channel_id", channelID)
 					continue
 				}
 			}

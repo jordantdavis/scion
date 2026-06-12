@@ -125,39 +125,57 @@ func (s *Server) bootstrapSingleTemplate(ctx context.Context, name, templatePath
 	return err
 }
 
-// templateConfigInfo holds the harness type and default harness config name
-// extracted from a template's scion-agent.yaml.
+// templateConfigInfo holds the harness type, default harness config name, and
+// hub access scopes extracted from a template's scion-agent.yaml.
 type templateConfigInfo struct {
-	Harness              string // inferred harness type (claude, gemini, etc.)
-	DefaultHarnessConfig string // actual harness-config name from config (e.g. "claude-web", "adk")
+	Harness              string                 // inferred harness type (claude, gemini, etc.)
+	DefaultHarnessConfig string                 // actual harness-config name from config (e.g. "claude-web", "adk")
+	HubAccess            *store.HubAccessConfig // hub access scopes granted to agents created from this template
 }
 
-// detectHarnessFromConfig reads a template's config and returns the harness type
-// and the default harness config name. The harness type is inferred from the
-// config name or explicit harness field. The default harness config name preserves
-// the original value from scion-agent.yaml so it can be used for hub resolution.
+// detectHarnessFromConfig reads a template's config and returns the harness type,
+// the default harness config name, and any hub access scopes. The harness type is
+// inferred from the config name or explicit harness field. The default harness
+// config name preserves the original value from scion-agent.yaml so it can be used
+// for hub resolution. Hub access scopes are extracted from the hub_access block.
 func detectHarnessFromConfig(templatePath, templateName string) templateConfigInfo {
 	t := &config.Template{Name: templateName, Path: templatePath}
 	cfg, err := t.LoadConfig()
 	if err == nil && cfg != nil {
+		hubAccess := extractHubAccess(cfg)
 		if cfg.HarnessConfig != "" {
 			return templateConfigInfo{
 				Harness:              inferHarnessFromName(cfg.HarnessConfig),
 				DefaultHarnessConfig: cfg.HarnessConfig,
+				HubAccess:            hubAccess,
 			}
 		}
 		if cfg.DefaultHarnessConfig != "" {
 			return templateConfigInfo{
 				Harness:              inferHarnessFromName(cfg.DefaultHarnessConfig),
 				DefaultHarnessConfig: cfg.DefaultHarnessConfig,
+				HubAccess:            hubAccess,
 			}
 		}
 		if cfg.Harness != "" {
-			return templateConfigInfo{Harness: cfg.Harness}
+			return templateConfigInfo{Harness: cfg.Harness, HubAccess: hubAccess}
+		}
+		if hubAccess != nil {
+			return templateConfigInfo{Harness: inferHarnessFromName(templateName), HubAccess: hubAccess}
 		}
 	}
 
 	return templateConfigInfo{Harness: inferHarnessFromName(templateName)}
+}
+
+// extractHubAccess maps the api.ScionConfig hub_access block onto the store
+// HubAccessConfig type used by template records. Returns nil when no scopes are
+// declared so callers can leave the template's Config.HubAccess unset.
+func extractHubAccess(cfg *api.ScionConfig) *store.HubAccessConfig {
+	if cfg == nil || cfg.HubAccess == nil || len(cfg.HubAccess.Scopes) == 0 {
+		return nil
+	}
+	return &store.HubAccessConfig{Scopes: cfg.HubAccess.Scopes}
 }
 
 // inferHarnessFromName guesses the harness type from a name string.

@@ -326,6 +326,89 @@ For reference, the following context is available inside an agent container that
 
 ---
 
+## 6.5 Reference: Agent Token Scopes and `hub_access` Template Config
+
+> **Note on scope naming:** Earlier sections in this document use the historical
+> `grove:` prefix that was foreshadowed in `sciontool-auth.md`. The implemented
+> scopes use the `project:` prefix (`pkg/hub/agenttoken.go`), consistent with the
+> grove→project rename. The tables below reflect the shipping scope names.
+
+### Agent Token Scopes (Reference)
+
+Agents receive JWT tokens with the following scopes. Default scopes are always
+granted; opt-in scopes are added only when a template's `hub_access.scopes`
+requests them.
+
+| Scope | Default | Purpose |
+|-------|---------|---------|
+| `agent:status:update` | Yes | Update own status |
+| `agent:token:refresh` | Yes | Refresh own token before expiry |
+| `project:agent:notify` | Yes | Create notification subscriptions within the project |
+| `project:agent:create` | Opt-in | Create sub-agents in the same project |
+| `project:agent:lifecycle` | Opt-in | Start/stop/restart peer agents in the same project |
+| `project:secret:read` | Opt-in | Read project secrets |
+| `agent:log:append` | Opt-in | Append to own logs |
+| `project:gcp:token:<sa-id>` | Opt-in | Mint tokens for a specific GCP service account |
+
+Default scopes are defined in `pkg/hub/server.go` (`GenerateAgentToken`); the
+scope constants live in `pkg/hub/agenttoken.go`.
+
+### Granting Sub-Agent Creation Permissions
+
+To allow a template's agents to create and manage sub-agents, add
+`hub_access.scopes` to its `scion-agent.yaml`:
+
+```yaml
+# .scion/agents/lead-agent/scion-agent.yaml
+default_harness_config: claude
+hub_access:
+  scopes:
+    - project:agent:create
+    - project:agent:lifecycle
+```
+
+When agents are created from this template, they receive these scopes in their
+JWT tokens, allowing them to:
+
+- Call `scion agent create --name sub-agent ...` within their project.
+- Call `scion agent start <id>`, `scion agent stop <id>`, etc.
+
+Sub-agents cannot escape the project scope: Hub handler authorization checks
+constrain every agent-as-caller action to the caller's own project.
+
+### Template Configuration: `hub_access`
+
+The `hub_access` field in `scion-agent.yaml` configures which Hub API scopes
+agents created from the template receive:
+
+```yaml
+hub_access:
+  scopes:
+    - <scope-name>
+    - ...
+```
+
+The field uses the snake_case YAML key `hub_access` and is mapped (camelCase
+`hubAccess` on the wire) through the following pipeline:
+
+1. **Parse** — `config.Template.LoadConfig()` unmarshals `scion-agent.yaml` into
+   `api.ScionConfig`, populating `ScionConfig.HubAccess` (`pkg/api/types.go`).
+2. **Bootstrap** — `detectHarnessFromConfig` (`pkg/hub/template_bootstrap.go`)
+   maps the scopes onto `store.TemplateConfig.HubAccess`, which is persisted as
+   JSON on the template record.
+3. **Dispatch** — `populateAgentConfig` (`pkg/hub/handlers.go`) copies the
+   template's scopes to `agent.AppliedConfig.HubAccessScopes`, which the
+   dispatcher converts to `AgentTokenScope` values and passes to
+   `GenerateAgentToken`.
+4. **Merge** — `GenerateAgentToken` (`pkg/hub/server.go`) deduplicates the
+   requested scopes against the always-granted defaults before signing the JWT.
+
+The Go Hub client mirrors this field as `hubclient.TemplateConfig.HubAccess`
+(`pkg/hubclient/types.go`) so templates round-tripped through the client do not
+silently drop scopes.
+
+---
+
 ## 7. Files Affected
 
 | File | Change |

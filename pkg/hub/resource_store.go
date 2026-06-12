@@ -269,34 +269,64 @@ func (p *templatePersistence) Update(ctx context.Context, rec *ResourceRecord, d
 	return p.s.store.UpdateTemplate(ctx, t)
 }
 
-// applyDirMeta refreshes the template's harness type and default harness-config
-// from the on-disk config, and mirrors the resolved harness back onto rec.
+// applyDirMeta refreshes the template's harness type, default harness-config,
+// and hub access scopes from the on-disk config, and mirrors the resolved
+// harness back onto rec.
 func (p *templatePersistence) applyDirMeta(t *store.Template, dir string, rec *ResourceRecord) {
 	cfgInfo := detectHarnessFromConfig(dir, t.Name)
 	t.Harness = cfgInfo.Harness
 	t.DefaultHarnessConfig = cfgInfo.DefaultHarnessConfig
 	rec.Harness = cfgInfo.Harness
+	if cfgInfo.HubAccess != nil {
+		if t.Config == nil {
+			t.Config = &store.TemplateConfig{}
+		}
+		t.Config.HubAccess = cfgInfo.HubAccess
+	} else if t.Config != nil {
+		// Config no longer declares hub_access; clear any stale scopes so the
+		// template record matches the on-disk source.
+		t.Config.HubAccess = nil
+	}
 }
 
 func (p *templatePersistence) OnHashMatch(ctx context.Context, rec *ResourceRecord, dir string) (bool, error) {
-	// Backfill DefaultHarnessConfig for templates imported before that field
-	// existed, even when content is unchanged.
+	// Backfill DefaultHarnessConfig and hub access scopes for templates imported
+	// before those fields existed, even when content is unchanged.
 	t := p.model
-	if t.DefaultHarnessConfig != "" {
+
+	needHarnessConfig := t.DefaultHarnessConfig == ""
+	needHubAccess := t.Config == nil || t.Config.HubAccess == nil
+	if !needHarnessConfig && !needHubAccess {
 		return false, nil
 	}
+
 	cfgInfo := detectHarnessFromConfig(dir, t.Name)
-	if cfgInfo.DefaultHarnessConfig == "" {
+
+	updated := false
+	if needHarnessConfig && cfgInfo.DefaultHarnessConfig != "" {
+		t.DefaultHarnessConfig = cfgInfo.DefaultHarnessConfig
+		t.Harness = cfgInfo.Harness
+		updated = true
+	}
+	if needHubAccess && cfgInfo.HubAccess != nil {
+		if t.Config == nil {
+			t.Config = &store.TemplateConfig{}
+		}
+		t.Config.HubAccess = cfgInfo.HubAccess
+		updated = true
+	}
+	if !updated {
 		return false, nil
 	}
-	t.DefaultHarnessConfig = cfgInfo.DefaultHarnessConfig
-	t.Harness = cfgInfo.Harness
+
 	if err := p.s.store.UpdateTemplate(ctx, t); err != nil {
-		return false, fmt.Errorf("template bootstrap: failed to backfill defaultHarnessConfig: %w", err)
+		return false, fmt.Errorf("template bootstrap: failed to backfill template metadata: %w", err)
 	}
 	p.s.importTemplateHarnessConfigs(ctx, dir, t.Scope, t.ScopeID)
-	p.s.templateLog.Info("template bootstrap: backfilled defaultHarnessConfig",
-		"template", t.Name, "defaultHarnessConfig", cfgInfo.DefaultHarnessConfig)
+	p.s.templateLog.Info("template bootstrap: backfilled template metadata",
+		"template", t.Name,
+		"defaultHarnessConfig", cfgInfo.DefaultHarnessConfig,
+		"hubAccess", cfgInfo.HubAccess != nil)
 	return false, nil
 }
 

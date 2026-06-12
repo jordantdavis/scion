@@ -137,6 +137,50 @@ func TestAgentTokenService_AgentCreateAndLifecycleScopes(t *testing.T) {
 	assert.False(t, claims.HasScope(ScopeProjectSecretRead))
 }
 
+// TestServerGenerateAgentToken_TemplateHubAccessScopesReachJWT proves the
+// end-to-end goal of the hub_access wiring: scopes granted by a template (which
+// arrive at dispatch as agent.AppliedConfig.HubAccessScopes and are passed to
+// Server.GenerateAgentToken as additionalScopes) are merged with the default
+// agent scopes — without duplication — and appear in the minted JWT.
+func TestServerGenerateAgentToken_TemplateHubAccessScopesReachJWT(t *testing.T) {
+	service, err := NewAgentTokenService(AgentTokenConfig{
+		SigningKey:    make([]byte, 32),
+		TokenDuration: time.Hour,
+	})
+	require.NoError(t, err)
+	s := &Server{agentTokenService: service}
+
+	// Simulate template HubAccess scopes flowing through dispatch. The lifecycle
+	// scope deliberately overlaps with nothing in defaults; include a default
+	// (notify) to assert dedup keeps a single copy.
+	templateScopes := []AgentTokenScope{ScopeAgentCreate, ScopeAgentLifecycle, ScopeAgentNotify}
+
+	token, err := s.GenerateAgentToken("agent-sub", tid("project-parent"), nil, templateScopes...)
+	require.NoError(t, err)
+
+	claims, err := service.ValidateAgentToken(token)
+	require.NoError(t, err)
+
+	// Defaults are always present.
+	assert.True(t, claims.HasScope(ScopeAgentStatusUpdate), "default status scope")
+	assert.True(t, claims.HasScope(ScopeAgentTokenRefresh), "default token-refresh scope")
+	assert.True(t, claims.HasScope(ScopeAgentNotify), "default notify scope")
+	// Template-granted opt-in scopes reached the JWT.
+	assert.True(t, claims.HasScope(ScopeAgentCreate), "template-granted create scope")
+	assert.True(t, claims.HasScope(ScopeAgentLifecycle), "template-granted lifecycle scope")
+	// A scope the template did not grant is absent.
+	assert.False(t, claims.HasScope(ScopeProjectSecretRead), "ungranted secret scope absent")
+
+	// The overlapping notify scope is not duplicated by the merge.
+	var notifyCount int
+	for _, sc := range claims.Scopes {
+		if sc == ScopeAgentNotify {
+			notifyCount++
+		}
+	}
+	assert.Equal(t, 1, notifyCount, "default+template overlap deduped to a single notify scope")
+}
+
 func TestAgentTokenService_RandomKeyGeneration(t *testing.T) {
 	// When no signing key is provided, a random one should be generated
 	service, err := NewAgentTokenService(AgentTokenConfig{})

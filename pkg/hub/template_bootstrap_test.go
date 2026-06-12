@@ -754,6 +754,112 @@ func TestDetectHarnessFromConfig_CustomDefaultHarnessConfig(t *testing.T) {
 	}
 }
 
+func TestBootstrapSingleTemplate_PersistsHubAccess(t *testing.T) {
+	// End-to-end: a template directory whose scion-agent.yaml declares
+	// hub_access.scopes must persist those scopes onto the stored
+	// store.Template.Config.HubAccess so dispatch can grant them.
+	srv, s, _ := testTemplateBootstrapServer(t)
+	ctx := context.Background()
+
+	templatesDir := makeTemplateDir(t, "lead-agent", map[string]string{
+		"scion-agent.yaml": `default_harness_config: claude
+hub_access:
+  scopes:
+    - project:agent:create
+    - project:agent:lifecycle
+`,
+	})
+	templateDir := filepath.Join(templatesDir, "lead-agent")
+
+	if err := srv.bootstrapSingleTemplate(ctx, "lead-agent", templateDir, store.TemplateScopeGlobal, ""); err != nil {
+		t.Fatalf("bootstrap failed: %v", err)
+	}
+
+	got, err := s.GetTemplateBySlug(ctx, "lead-agent", store.TemplateScopeGlobal, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Config == nil || got.Config.HubAccess == nil {
+		t.Fatalf("expected persisted HubAccess, got Config=%+v", got.Config)
+	}
+	want := []string{"project:agent:create", "project:agent:lifecycle"}
+	if len(got.Config.HubAccess.Scopes) != len(want) {
+		t.Fatalf("expected %d scopes, got %v", len(want), got.Config.HubAccess.Scopes)
+	}
+	for i := range want {
+		if got.Config.HubAccess.Scopes[i] != want[i] {
+			t.Errorf("scope[%d] = %q, want %q", i, got.Config.HubAccess.Scopes[i], want[i])
+		}
+	}
+}
+
+func TestDetectHarnessFromConfig_HubAccess(t *testing.T) {
+	dir := t.TempDir()
+
+	configContent := `default_harness_config: claude
+hub_access:
+  scopes:
+    - project:agent:create
+    - project:agent:lifecycle
+`
+	if err := os.WriteFile(filepath.Join(dir, "scion-agent.yaml"), []byte(configContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := detectHarnessFromConfig(dir, "lead-agent")
+	if got.Harness != "claude" {
+		t.Errorf("expected Harness 'claude', got %q", got.Harness)
+	}
+	if got.HubAccess == nil {
+		t.Fatal("expected HubAccess to be extracted, got nil")
+	}
+	want := []string{"project:agent:create", "project:agent:lifecycle"}
+	if len(got.HubAccess.Scopes) != len(want) {
+		t.Fatalf("expected %d scopes, got %v", len(want), got.HubAccess.Scopes)
+	}
+	for i := range want {
+		if got.HubAccess.Scopes[i] != want[i] {
+			t.Errorf("scope[%d] = %q, want %q", i, got.HubAccess.Scopes[i], want[i])
+		}
+	}
+}
+
+func TestDetectHarnessFromConfig_HubAccessWithExplicitHarness(t *testing.T) {
+	// hub_access must also be extracted when the template uses the explicit
+	// harness field rather than a harness-config.
+	dir := t.TempDir()
+	configContent := `harness: codex
+hub_access:
+  scopes:
+    - project:secret:read
+`
+	if err := os.WriteFile(filepath.Join(dir, "scion-agent.yaml"), []byte(configContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := detectHarnessFromConfig(dir, "my-template")
+	if got.Harness != "codex" {
+		t.Errorf("expected Harness 'codex', got %q", got.Harness)
+	}
+	if got.HubAccess == nil || len(got.HubAccess.Scopes) != 1 || got.HubAccess.Scopes[0] != "project:secret:read" {
+		t.Fatalf("expected HubAccess with project:secret:read, got %+v", got.HubAccess)
+	}
+}
+
+func TestDetectHarnessFromConfig_NoHubAccess(t *testing.T) {
+	dir := t.TempDir()
+	configContent := `default_harness_config: claude
+`
+	if err := os.WriteFile(filepath.Join(dir, "scion-agent.yaml"), []byte(configContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := detectHarnessFromConfig(dir, "my-template")
+	if got.HubAccess != nil {
+		t.Errorf("expected nil HubAccess when hub_access absent, got %+v", got.HubAccess)
+	}
+}
+
 // setupWorkspaceProject creates a server, store, project, and workspace temp dir
 // linked via an embedded broker provider. Returns the server, store, project,
 // and the workspace root path. Templates should be placed under the returned

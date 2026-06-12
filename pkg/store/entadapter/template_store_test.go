@@ -71,6 +71,33 @@ func TestCreateAndGetTemplate(t *testing.T) {
 	assert.Equal(t, "home/.bashrc", got.Files[0].Path)
 }
 
+func TestCreateAndGetTemplate_HubAccessRoundTrip(t *testing.T) {
+	ts := newTestTemplateStore(t)
+	ctx := context.Background()
+
+	tmpl := &store.Template{
+		ID:         uuid.New().String(),
+		Name:       "lead-agent",
+		Slug:       "lead-agent",
+		Harness:    "claude",
+		Scope:      store.TemplateScopeGlobal,
+		Visibility: "public",
+		Config: &store.TemplateConfig{
+			Harness: "claude",
+			HubAccess: &store.HubAccessConfig{
+				Scopes: []string{"project:agent:create", "project:agent:lifecycle"},
+			},
+		},
+	}
+	require.NoError(t, ts.CreateTemplate(ctx, tmpl))
+
+	got, err := ts.GetTemplate(ctx, tmpl.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.Config)
+	require.NotNil(t, got.Config.HubAccess, "HubAccess must survive JSON round-trip through the database")
+	assert.Equal(t, []string{"project:agent:create", "project:agent:lifecycle"}, got.Config.HubAccess.Scopes)
+}
+
 func TestGetTemplateNotFound(t *testing.T) {
 	ts := newTestTemplateStore(t)
 	_, err := ts.GetTemplate(context.Background(), uuid.New().String())

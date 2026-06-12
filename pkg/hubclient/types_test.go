@@ -163,3 +163,51 @@ func TestResolvedSecret_JSON(t *testing.T) {
 		}
 	})
 }
+
+func TestTemplateConfig_HubAccessRoundTrip(t *testing.T) {
+	t.Run("unmarshal hubAccess from Hub response", func(t *testing.T) {
+		// The Hub serializes store.TemplateConfig with the camelCase hubAccess
+		// key; the client must deserialize it without dropping scopes.
+		jsonData := `{"harness":"claude","hubAccess":{"scopes":["project:agent:create","project:agent:lifecycle"]}}`
+		var cfg TemplateConfig
+		if err := json.Unmarshal([]byte(jsonData), &cfg); err != nil {
+			t.Fatalf("Unmarshal failed: %v", err)
+		}
+		if cfg.HubAccess == nil {
+			t.Fatal("HubAccess = nil, want populated")
+		}
+		want := []string{"project:agent:create", "project:agent:lifecycle"}
+		if len(cfg.HubAccess.Scopes) != len(want) {
+			t.Fatalf("Scopes = %v, want %v", cfg.HubAccess.Scopes, want)
+		}
+		for i := range want {
+			if cfg.HubAccess.Scopes[i] != want[i] {
+				t.Errorf("Scopes[%d] = %q, want %q", i, cfg.HubAccess.Scopes[i], want[i])
+			}
+		}
+	})
+
+	t.Run("marshal preserves hubAccess key", func(t *testing.T) {
+		cfg := TemplateConfig{
+			Harness:   "claude",
+			HubAccess: &HubAccessConfig{Scopes: []string{"project:secret:read"}},
+		}
+		data, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("Marshal failed: %v", err)
+		}
+		if !strings.Contains(string(data), `"hubAccess":{"scopes":["project:secret:read"]}`) {
+			t.Errorf("Marshal output missing hubAccess: %s", string(data))
+		}
+	})
+
+	t.Run("omitempty drops nil hubAccess", func(t *testing.T) {
+		data, err := json.Marshal(TemplateConfig{Harness: "claude"})
+		if err != nil {
+			t.Fatalf("Marshal failed: %v", err)
+		}
+		if strings.Contains(string(data), "hubAccess") {
+			t.Errorf("expected hubAccess omitted when nil, got: %s", string(data))
+		}
+	})
+}

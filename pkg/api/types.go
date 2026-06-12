@@ -459,6 +459,12 @@ type ScionConfig struct {
 	Hub           *AgentHubConfig            `json:"hub,omitempty" yaml:"hub,omitempty"`
 	Telemetry     *TelemetryConfig           `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 
+	// HubAccess declares the Hub API scopes that agents created from this
+	// template should receive in their JWT. The yaml key is snake_case
+	// (hub_access) per template-authoring style; the json key is camelCase
+	// (hubAccess) per Hub API convention.
+	HubAccess *HubAccessConfig `json:"hubAccess,omitempty" yaml:"hub_access,omitempty"`
+
 	Secrets []RequiredSecret `json:"secrets,omitempty" yaml:"secrets,omitempty"`
 
 	// Skills declares skill references to resolve at provision time.
@@ -478,6 +484,13 @@ type ScionConfig struct {
 
 	// Info contains persisted metadata about the agent
 	Info *AgentInfo `json:"-" yaml:"-"`
+}
+
+// HubAccessConfig declares the Hub API scopes granted to agents created from a
+// template. Scopes listed here are merged with the default agent token scopes
+// when the agent's JWT is generated.
+type HubAccessConfig struct {
+	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 }
 
 // ParseMaxDuration returns the parsed max duration, or 0 for empty/invalid values.

@@ -905,6 +905,80 @@ mcp_servers:
 	}
 }
 
+func TestLoadConfigHubAccess(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "scion-agent.yaml")
+	if err := os.WriteFile(cfgPath, []byte(`schema_version: "1"
+default_harness_config: claude
+hub_access:
+  scopes:
+    - project:agent:create
+    - project:agent:lifecycle
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tpl := &Template{Path: tmp}
+	cfg, err := tpl.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.HubAccess == nil {
+		t.Fatal("expected HubAccess to be populated, got nil")
+	}
+	got := cfg.HubAccess.Scopes
+	want := []string{"project:agent:create", "project:agent:lifecycle"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d scopes, got %d (%v)", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("scope[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestLoadConfigHubAccessHyphenatedKey(t *testing.T) {
+	// Template authors may use hyphenated top-level keys; unmarshalYAMLNormalized
+	// should normalize hub-access -> hub_access before decoding.
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "scion-agent.yaml")
+	if err := os.WriteFile(cfgPath, []byte(`schema_version: "1"
+default_harness_config: claude
+hub-access:
+  scopes:
+    - project:secret:read
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tpl := &Template{Path: tmp}
+	cfg, err := tpl.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.HubAccess == nil || len(cfg.HubAccess.Scopes) != 1 || cfg.HubAccess.Scopes[0] != "project:secret:read" {
+		t.Fatalf("expected hyphenated hub-access to normalize, got %+v", cfg.HubAccess)
+	}
+}
+
+func TestLoadConfigNoHubAccess(t *testing.T) {
+	// A template without a hub_access block must parse cleanly with nil HubAccess.
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "scion-agent.yaml")
+	if err := os.WriteFile(cfgPath, []byte(`schema_version: "1"
+default_harness_config: claude
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tpl := &Template{Path: tmp}
+	cfg, err := tpl.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if cfg.HubAccess != nil {
+		t.Errorf("expected nil HubAccess for template without hub_access, got %+v", cfg.HubAccess)
+	}
+}
+
 func TestValidateAgnosticTemplate_RejectsHarnessField(t *testing.T) {
 	cfg := &api.ScionConfig{Harness: "claude"}
 	err := ValidateAgnosticTemplate(cfg)

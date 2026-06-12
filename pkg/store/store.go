@@ -117,6 +117,9 @@ type Store interface {
 
 	// Skill operations (Skill Bank)
 	SkillStore
+
+	// HubSetting operations (generic hub-wide key/value configuration)
+	HubSettingStore
 }
 
 // AgentStore defines agent-related persistence operations.
@@ -1060,6 +1063,26 @@ type GCPServiceAccountFilter struct {
 	ScopeID string // Filter by scope ID
 	Email   string // Filter by SA email
 	Managed *bool  // Filter by managed status (nil = no filter)
+}
+
+// =============================================================================
+// Hub Settings (generic hub-wide key/value configuration)
+// =============================================================================
+
+// HubSettingStore defines generic hub-wide key/value configuration persistence.
+// Keys are immutable natural identifiers (see the HubSetting* constants in
+// models.go); values are free-form strings mutated via upsert.
+type HubSettingStore interface {
+	// GetHubSetting retrieves the value for a hub setting key.
+	// Returns ErrNotFound if the key has not been set.
+	GetHubSetting(ctx context.Context, key string) (string, error)
+
+	// SetHubSetting creates or updates the value for a hub setting key.
+	SetHubSetting(ctx context.Context, key, value string) error
+
+	// DeleteHubSetting removes a hub setting by key.
+	// Returns ErrNotFound if the key does not exist.
+	DeleteHubSetting(ctx context.Context, key string) error
 }
 
 // =============================================================================

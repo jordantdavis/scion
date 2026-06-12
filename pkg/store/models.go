@@ -1504,6 +1504,24 @@ const (
 )
 
 // =============================================================================
+// Hub Settings (generic hub-wide key/value configuration)
+// =============================================================================
+
+// Hub setting keys. These are the canonical keys stored in the hub_settings
+// table for hub-wide default configuration.
+const (
+	// HubSettingDefaultGCPIdentityMode holds the hub-wide default GCP identity
+	// metadata mode ("block", "passthrough", or "assign") applied to agents
+	// when neither the request nor the project specifies a mode.
+	HubSettingDefaultGCPIdentityMode = "default_gcp_identity_mode"
+
+	// HubSettingDefaultGCPIdentityServiceAccountID holds the ID of the
+	// hub-scoped GCPServiceAccount assigned by default when the hub default
+	// mode is "assign".
+	HubSettingDefaultGCPIdentityServiceAccountID = "default_gcp_identity_service_account_id"
+)
+
+// =============================================================================
 // Conversion Functions: Store -> API
 //
 // These functions convert persistence models to API models for external use.

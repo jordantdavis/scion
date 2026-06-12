@@ -87,6 +87,15 @@ type Client interface {
 	// GCPServiceAccounts returns the GCP service account operations interface scoped to a project.
 	GCPServiceAccounts(projectID string) GCPServiceAccountService
 
+	// HubGCPServiceAccounts returns the hub-scoped GCP service account operations interface.
+	HubGCPServiceAccounts() HubGCPServiceAccountService
+
+	// GetHubSettings retrieves hub-level default settings.
+	GetHubSettings(ctx context.Context) (*HubSettings, error)
+
+	// UpdateHubSettings updates hub-level default settings.
+	UpdateHubSettings(ctx context.Context, settings *HubSettings) (*HubSettings, error)
+
 	// Messages returns the user message inbox operations interface.
 	Messages() MessageService
 
@@ -122,6 +131,7 @@ type client struct {
 	messages              *messageService
 	allowList             *allowListService
 	invites               *inviteService
+	hubGCPServiceAccounts *hubGCPServiceAccountService
 }
 
 // New creates a new Hub API client.
@@ -153,6 +163,7 @@ func New(baseURL string, opts ...Option) (Client, error) {
 	c.messages = &messageService{c: c}
 	c.allowList = &allowListService{c: c}
 	c.invites = &inviteService{c: c}
+	c.hubGCPServiceAccounts = &hubGCPServiceAccountService{c: c}
 
 	return c, nil
 }
@@ -250,6 +261,11 @@ func (c *client) Schedules(projectID string) ScheduleService {
 // GCPServiceAccounts returns the GCP service account operations interface scoped to a project.
 func (c *client) GCPServiceAccounts(projectID string) GCPServiceAccountService {
 	return &gcpServiceAccountService{c: c, projectID: projectID}
+}
+
+// HubGCPServiceAccounts returns the hub-scoped GCP service account operations interface.
+func (c *client) HubGCPServiceAccounts() HubGCPServiceAccountService {
+	return c.hubGCPServiceAccounts
 }
 
 // Messages returns the user message inbox operations interface.

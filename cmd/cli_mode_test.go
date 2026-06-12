@@ -126,6 +126,16 @@ func buildTestTree() *cobra.Command {
 	hubNotif := &cobra.Command{Use: "notifications"}
 	hub.AddCommand(hubNotif)
 
+	hubSA := &cobra.Command{Use: "service-accounts"}
+	for _, name := range []string{"add", "list", "remove", "verify", "mint"} {
+		hubSA.AddCommand(&cobra.Command{Use: name})
+	}
+	hub.AddCommand(hubSA)
+
+	hubSettings := &cobra.Command{Use: "settings"}
+	hubSettings.AddCommand(&cobra.Command{Use: "set"})
+	hub.AddCommand(hubSettings)
+
 	root.AddCommand(hub)
 
 	// grove with subcommands
@@ -256,6 +266,8 @@ func TestApplyModeRestrictions_Assistant(t *testing.T) {
 		"config", "config.list", "config.set", "config.get", "config.validate", "config.dir", "config.schema",
 		"hub", "hub.status", "hub.enable", "hub.disable", "hub.link", "hub.unlink",
 		"hub.groves", "hub.brokers", "hub.env", "hub.secret",
+		"hub.service-accounts", "hub.service-accounts.add", "hub.service-accounts.list",
+		"hub.settings", "hub.settings.set",
 		"grove", "grove.init", "grove.list", "grove.prune", "grove.service-accounts",
 		"server", "server.start", "server.stop",
 		"broker",
@@ -306,6 +318,7 @@ func TestApplyModeRestrictions_Agent(t *testing.T) {
 	absent := []string{
 		"attach", "broker", "cdw", "clean", "completion", "config", "doctor",
 		"grove", "hub",
+		"hub.service-accounts", "hub.settings",
 		"init", "messages", "restore", "server", "sync",
 	}
 	for _, cmd := range absent {
@@ -441,6 +454,7 @@ func TestAgentAllowedList(t *testing.T) {
 		"hub.enable", "hub.disable", "hub.link", "hub.unlink",
 		"hub.auth", "hub.token", "hub.groves", "hub.brokers",
 		"hub.env", "hub.secret", "hub.status", "hub.notifications",
+		"hub.service-accounts", "hub.settings",
 		"messages.read",
 		"shared-dir.create", "shared-dir.remove",
 	}

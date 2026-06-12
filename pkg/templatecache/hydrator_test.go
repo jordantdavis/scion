@@ -121,6 +121,13 @@ func (m *mockHubClient) Skills() hubclient.SkillService        { return nil }
 func (m *mockHubClient) Health(ctx context.Context) (*hubclient.HealthResponse, error) {
 	return nil, nil
 }
+func (m *mockHubClient) HubGCPServiceAccounts() hubclient.HubGCPServiceAccountService { return nil }
+func (m *mockHubClient) GetHubSettings(ctx context.Context) (*hubclient.HubSettings, error) {
+	return nil, nil
+}
+func (m *mockHubClient) UpdateHubSettings(ctx context.Context, settings *hubclient.HubSettings) (*hubclient.HubSettings, error) {
+	return nil, nil
+}
 
 func TestHydrateSuccess(t *testing.T) {
 	tmpDir := t.TempDir()

@@ -2521,6 +2521,11 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/admin/lifecycle-hooks", s.handleAdminLifecycleHooks)
 	s.mux.HandleFunc("/api/v1/admin/lifecycle-hooks/", s.handleAdminLifecycleHookByID)
 
+	// Hub-scoped settings and GCP service accounts (admin-only).
+	s.mux.HandleFunc("/api/v1/hub/settings", s.handleHubSettings)
+	s.mux.HandleFunc("/api/v1/hub/gcp-service-accounts", s.handleHubGCPServiceAccounts)
+	s.mux.HandleFunc("/api/v1/hub/gcp-service-accounts/", s.handleHubGCPServiceAccountRoutes)
+
 	// Notification endpoints (user-facing)
 	s.mux.HandleFunc("/api/v1/notifications", s.handleNotifications)
 	s.mux.HandleFunc("/api/v1/notifications/", s.handleNotificationRoutes)

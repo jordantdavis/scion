@@ -24,7 +24,12 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 
-import type { GCPServiceAccount, GCPVerificationStatus, Capabilities, GCPMintQuotaInfo } from '../../shared/types.js';
+import type {
+  GCPServiceAccount,
+  GCPVerificationStatus,
+  Capabilities,
+  GCPMintQuotaInfo,
+} from '../../shared/types.js';
 import { can } from '../../shared/types.js';
 import { apiFetch, extractApiError } from '../../client/api.js';
 import { resourceStyles } from './resource-styles.js';
@@ -33,6 +38,23 @@ import { resourceStyles } from './resource-styles.js';
 export class ScionGCPServiceAccountList extends LitElement {
   @property() projectId = '';
   @property({ type: Boolean }) compact = false;
+  /**
+   * When true, the component manages hub-scoped service accounts via
+   * /api/v1/hub/gcp-service-accounts... instead of the project-scoped
+   * /api/v1/projects/{projectId}/gcp-service-accounts... endpoints.
+   * Project mode (the default) is unchanged.
+   */
+  @property({ type: Boolean }) hubScoped = false;
+
+  /**
+   * Base path for the GCP service account collection. Centralized so all
+   * fetch calls (load/register/verify/delete/mint) target the correct scope.
+   */
+  private get basePath(): string {
+    return this.hubScoped
+      ? '/api/v1/hub/gcp-service-accounts'
+      : `/api/v1/projects/${this.projectId}/gcp-service-accounts`;
+  }
 
   @state() private accounts: GCPServiceAccount[] = [];
   @state() private loading = true;
@@ -150,10 +172,12 @@ export class ScionGCPServiceAccountList extends LitElement {
     this.error = null;
 
     try {
-      const response = await apiFetch(`/api/v1/projects/${this.projectId}/gcp-service-accounts`);
+      const response = await apiFetch(this.basePath);
 
       if (!response.ok) {
-        throw new Error(await extractApiError(response, `HTTP ${response.status}: ${response.statusText}`));
+        throw new Error(
+          await extractApiError(response, `HTTP ${response.status}: ${response.statusText}`)
+        );
       }
 
       const data = (await response.json()) as
@@ -203,14 +227,11 @@ export class ScionGCPServiceAccountList extends LitElement {
       if (this.mintDisplayName.trim()) body.display_name = this.mintDisplayName.trim();
       if (this.mintDescription.trim()) body.description = this.mintDescription.trim();
 
-      const response = await apiFetch(
-        `/api/v1/projects/${this.projectId}/gcp-service-accounts/mint`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        }
-      );
+      const response = await apiFetch(`${this.basePath}/mint`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
 
       if (!response.ok) {
         throw new Error(
@@ -271,14 +292,16 @@ export class ScionGCPServiceAccountList extends LitElement {
         body.displayName = this.dialogDisplayName.trim();
       }
 
-      const response = await apiFetch(`/api/v1/projects/${this.projectId}/gcp-service-accounts`, {
+      const response = await apiFetch(this.basePath, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
 
       if (!response.ok) {
-        throw new Error(await extractApiError(response, `HTTP ${response.status}: ${response.statusText}`));
+        throw new Error(
+          await extractApiError(response, `HTTP ${response.status}: ${response.statusText}`)
+        );
       }
 
       // Check if auto-verification failed after registration
@@ -307,10 +330,7 @@ export class ScionGCPServiceAccountList extends LitElement {
     this.verifyingId = account.id;
 
     try {
-      const response = await apiFetch(
-        `/api/v1/projects/${this.projectId}/gcp-service-accounts/${account.id}/verify`,
-        { method: 'POST' }
-      );
+      const response = await apiFetch(`${this.basePath}/${account.id}/verify`, { method: 'POST' });
 
       if (!response.ok) {
         const errorData = (await response.json().catch(() => ({}))) as {
@@ -361,13 +381,12 @@ export class ScionGCPServiceAccountList extends LitElement {
     this.deletingId = account.id;
 
     try {
-      const response = await apiFetch(
-        `/api/v1/projects/${this.projectId}/gcp-service-accounts/${account.id}`,
-        { method: 'DELETE' }
-      );
+      const response = await apiFetch(`${this.basePath}/${account.id}`, { method: 'DELETE' });
 
       if (!response.ok && response.status !== 204) {
-        throw new Error(await extractApiError(response, `Failed to delete (HTTP ${response.status})`));
+        throw new Error(
+          await extractApiError(response, `Failed to delete (HTTP ${response.status})`)
+        );
       }
 
       await this.loadAccounts();
@@ -483,7 +502,11 @@ export class ScionGCPServiceAccountList extends LitElement {
         <div class="section-header">
           <div class="section-header-info">
             <h2>GCP Service Accounts</h2>
-            <p>Manage GCP service accounts for agent identity assignment in this project.</p>
+            <p>
+              ${this.hubScoped
+                ? 'Manage hub-scoped GCP service accounts for agent identity assignment across all projects.'
+                : 'Manage GCP service accounts for agent identity assignment in this project.'}
+            </p>
           </div>
           ${can(this.listCapabilities, 'create')
             ? html`
@@ -508,7 +531,6 @@ export class ScionGCPServiceAccountList extends LitElement {
             : ''}
         </div>
         ${this.renderQuotaInfo()}
-
         ${this.loading
           ? html`<div class="section-loading">
               <sl-spinner></sl-spinner> Loading service accounts...
@@ -691,7 +713,9 @@ export class ScionGCPServiceAccountList extends LitElement {
             label="GCP Project ID"
             placeholder="e.g. my-project-123"
             value=${this.dialogProjectId}
-            help-text=${this.extractProjectFromEmail(this.dialogEmail) ? 'Auto-detected from service account email' : ''}
+            help-text=${this.extractProjectFromEmail(this.dialogEmail)
+              ? 'Auto-detected from service account email'
+              : ''}
             @sl-input=${(e: Event) => {
               this.dialogProjectId = (e.target as HTMLInputElement).value;
             }}
@@ -794,11 +818,13 @@ export class ScionGCPServiceAccountList extends LitElement {
 
           <div class="dialog-hint">
             <sl-icon name="info-circle"></sl-icon>
-            The Hub will create a new service account in its own GCP project. The SA starts with
-            no IAM permissions and is automatically verified for impersonation.
+            The Hub will create a new service account in its own GCP project. The SA starts with no
+            IAM permissions and is automatically verified for impersonation.
           </div>
 
-          ${this.mintDialogError ? html`<div class="dialog-error">${this.mintDialogError}</div>` : nothing}
+          ${this.mintDialogError
+            ? html`<div class="dialog-error">${this.mintDialogError}</div>`
+            : nothing}
         </form>
 
         <sl-button
@@ -873,7 +899,9 @@ export class ScionGCPServiceAccountList extends LitElement {
             assignment until verification succeeds.
           </p>
           <p>After granting the role, click the refresh icon to re-check verification.</p>
-          <p><strong>Note:</strong> GCP IAM permission changes may take several minutes to propagate.</p>
+          <p>
+            <strong>Note:</strong> GCP IAM permission changes may take several minutes to propagate.
+          </p>
         </div>
 
         <sl-button slot="footer" variant="primary" @click=${this.closeVerifyFailedDialog}>

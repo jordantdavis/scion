@@ -18,6 +18,7 @@ import (
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/group"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/groupmembership"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/harnessconfig"
+	"github.com/GoogleCloudPlatform/scion/pkg/ent/hubsetting"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/invitecode"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/lifecyclehook"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/lifecyclehookagentphase"
@@ -408,6 +409,30 @@ func init() {
 	harnessconfigDescID := harnessconfigFields[0].Descriptor()
 	// harnessconfig.DefaultID holds the default value on creation for the id field.
 	harnessconfig.DefaultID = harnessconfigDescID.Default.(func() uuid.UUID)
+	hubsettingFields := schema.HubSetting{}.Fields()
+	_ = hubsettingFields
+	// hubsettingDescKey is the schema descriptor for key field.
+	hubsettingDescKey := hubsettingFields[1].Descriptor()
+	// hubsetting.KeyValidator is a validator for the "key" field. It is called by the builders before save.
+	hubsetting.KeyValidator = hubsettingDescKey.Validators[0].(func(string) error)
+	// hubsettingDescValue is the schema descriptor for value field.
+	hubsettingDescValue := hubsettingFields[2].Descriptor()
+	// hubsetting.DefaultValue holds the default value on creation for the value field.
+	hubsetting.DefaultValue = hubsettingDescValue.Default.(string)
+	// hubsettingDescCreated is the schema descriptor for created field.
+	hubsettingDescCreated := hubsettingFields[3].Descriptor()
+	// hubsetting.DefaultCreated holds the default value on creation for the created field.
+	hubsetting.DefaultCreated = hubsettingDescCreated.Default.(func() time.Time)
+	// hubsettingDescUpdated is the schema descriptor for updated field.
+	hubsettingDescUpdated := hubsettingFields[4].Descriptor()
+	// hubsetting.DefaultUpdated holds the default value on creation for the updated field.
+	hubsetting.DefaultUpdated = hubsettingDescUpdated.Default.(func() time.Time)
+	// hubsetting.UpdateDefaultUpdated holds the default value on update for the updated field.
+	hubsetting.UpdateDefaultUpdated = hubsettingDescUpdated.UpdateDefault.(func() time.Time)
+	// hubsettingDescID is the schema descriptor for id field.
+	hubsettingDescID := hubsettingFields[0].Descriptor()
+	// hubsetting.DefaultID holds the default value on creation for the id field.
+	hubsetting.DefaultID = hubsettingDescID.Default.(func() uuid.UUID)
 	invitecodeFields := schema.InviteCode{}.Fields()
 	_ = invitecodeFields
 	// invitecodeDescCodeHash is the schema descriptor for code_hash field.

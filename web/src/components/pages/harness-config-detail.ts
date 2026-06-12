@@ -519,7 +519,13 @@ export class ScionPageHarnessConfigDetail extends LitElement {
       }
 
       const result = await response.json();
-      this.buildRunId = result.run_id ?? '';
+      if (!result?.runId) {
+        this.buildError = 'Build started but no run ID was returned';
+        this.buildRunning = false;
+        this.buildStatus = 'failed';
+        return;
+      }
+      this.buildRunId = result.runId;
       this.startBuildPolling();
     } catch (err) {
       this.buildError = err instanceof Error ? err.message : 'Failed to start build';

@@ -428,6 +428,16 @@ type TemplateConfig struct {
 	CommandArgs []string          `json:"commandArgs,omitempty"`
 	Model       string            `json:"model,omitempty"`
 	Kubernetes  *KubernetesConfig `json:"kubernetes,omitempty"`
+	// HubAccess carries the Hub API scopes granted to agents created from the
+	// template. Mirrors store.TemplateConfig.HubAccess so templates round-tripped
+	// through the Go client do not silently drop scopes.
+	HubAccess *HubAccessConfig `json:"hubAccess,omitempty"`
+}
+
+// HubAccessConfig defines the Hub API scopes an agent created from a template
+// receives. Mirrors store.HubAccessConfig.
+type HubAccessConfig struct {
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // KubernetesConfig holds Kubernetes-specific configuration.

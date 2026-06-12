@@ -424,6 +424,27 @@ var (
 			},
 		},
 	}
+	// HubSettingsColumns holds the columns for the "hub_settings" table.
+	HubSettingsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeUUID},
+		{Name: "key", Type: field.TypeString},
+		{Name: "value", Type: field.TypeString, Default: ""},
+		{Name: "created", Type: field.TypeTime},
+		{Name: "updated", Type: field.TypeTime},
+	}
+	// HubSettingsTable holds the schema information for the "hub_settings" table.
+	HubSettingsTable = &schema.Table{
+		Name:       "hub_settings",
+		Columns:    HubSettingsColumns,
+		PrimaryKey: []*schema.Column{HubSettingsColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "hubsetting_key",
+				Unique:  true,
+				Columns: []*schema.Column{HubSettingsColumns[1]},
+			},
+		},
+	}
 	// InviteCodesColumns holds the columns for the "invite_codes" table.
 	InviteCodesColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeUUID},
@@ -1182,6 +1203,7 @@ var (
 		GroupsTable,
 		GroupMembershipsTable,
 		HarnessConfigsTable,
+		HubSettingsTable,
 		InviteCodesTable,
 		LifecycleHooksTable,
 		LifecycleHookAgentPhasesTable,
@@ -1240,6 +1262,9 @@ func init() {
 	GroupMembershipsTable.ForeignKeys[2].RefTable = AgentsTable
 	HarnessConfigsTable.Annotation = &entsql.Annotation{
 		Table: "harness_configs",
+	}
+	HubSettingsTable.Annotation = &entsql.Annotation{
+		Table: "hub_settings",
 	}
 	InviteCodesTable.Annotation = &entsql.Annotation{
 		Table: "invite_codes",

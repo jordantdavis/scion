@@ -54,6 +54,7 @@ type CompositeStore struct {
 	*BrokerDispatchStore
 	*LifecycleHookStore
 	*SkillStore
+	*HubSettingStore
 
 	client *ent.Client
 }
@@ -85,6 +86,7 @@ func NewCompositeStore(client *ent.Client) *CompositeStore {
 		BrokerDispatchStore: NewBrokerDispatchStore(client),
 		LifecycleHookStore:  NewLifecycleHookStore(client),
 		SkillStore:          NewSkillStore(client),
+		HubSettingStore:     NewHubSettingStore(client),
 		client:              client,
 	}
 }

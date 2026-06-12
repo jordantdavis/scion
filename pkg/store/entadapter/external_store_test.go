@@ -96,6 +96,74 @@ func TestExternalStore_GCPServiceAccountCRUD(t *testing.T) {
 	assert.ErrorIs(t, s.DeleteGCPServiceAccount(ctx, sa.ID), store.ErrNotFound)
 }
 
+// TestExternalStore_GCPServiceAccountHubScope proves the GCPServiceAccount CRUD
+// surface is already scope-generic: a hub-scoped SA (Scope="hub", ScopeID=hubID)
+// can coexist with a project-scoped SA that shares the same email, because the
+// unique index is over (email, scope, scope_id), and filtering by scope isolates
+// each. No store changes were needed for hub-scoped service accounts.
+func TestExternalStore_GCPServiceAccountHubScope(t *testing.T) {
+	ctx := context.Background()
+	s := newTestExternalStore(t)
+
+	const sharedEmail = "shared@project.iam.gserviceaccount.com"
+	hubID := uuid.NewString()
+	projectID := uuid.NewString()
+
+	hubSA := &store.GCPServiceAccount{
+		ID:          uuid.NewString(),
+		Scope:       store.ScopeHub,
+		ScopeID:     hubID,
+		Email:       sharedEmail,
+		ProjectID:   "gcp-project-123",
+		DisplayName: "Hub default SA",
+		Verified:    true,
+		VerifiedAt:  time.Now().UTC().Truncate(time.Second),
+		CreatedBy:   "admin",
+	}
+	require.NoError(t, s.CreateGCPServiceAccount(ctx, hubSA))
+
+	// Same email under a different scope/scope_id is permitted by the
+	// (email, scope, scope_id) unique index.
+	projectSA := &store.GCPServiceAccount{
+		ID:        uuid.NewString(),
+		Scope:     store.ScopeProject,
+		ScopeID:   projectID,
+		Email:     sharedEmail,
+		ProjectID: "gcp-project-123",
+		CreatedBy: "tester",
+	}
+	require.NoError(t, s.CreateGCPServiceAccount(ctx, projectSA))
+
+	// Hub-scoped listing returns only the hub row.
+	hubList, err := s.ListGCPServiceAccounts(ctx, store.GCPServiceAccountFilter{
+		Scope:   store.ScopeHub,
+		ScopeID: hubID,
+	})
+	require.NoError(t, err)
+	require.Len(t, hubList, 1)
+	assert.Equal(t, hubSA.ID, hubList[0].ID)
+	assert.Equal(t, store.ScopeHub, hubList[0].Scope)
+	assert.Equal(t, hubID, hubList[0].ScopeID)
+
+	// Project-scoped listing returns only the project row.
+	projList, err := s.ListGCPServiceAccounts(ctx, store.GCPServiceAccountFilter{
+		Scope:   store.ScopeProject,
+		ScopeID: projectID,
+	})
+	require.NoError(t, err)
+	require.Len(t, projList, 1)
+	assert.Equal(t, projectSA.ID, projList[0].ID)
+
+	// A duplicate hub SA (same email+scope+scope_id) is still rejected.
+	dup := *hubSA
+	dup.ID = uuid.NewString()
+	assert.ErrorIs(t, s.CreateGCPServiceAccount(ctx, &dup), store.ErrAlreadyExists)
+
+	count, err := s.CountGCPServiceAccounts(ctx, store.GCPServiceAccountFilter{Scope: store.ScopeHub, ScopeID: hubID})
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+}
+
 func TestExternalStore_GitHubInstallation(t *testing.T) {
 	ctx := context.Background()
 	s := newTestExternalStore(t)

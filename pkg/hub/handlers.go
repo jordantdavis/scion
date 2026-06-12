@@ -668,7 +668,11 @@ func (s *Server) createAgentInProject(
 			}
 		}
 	} else {
-		// No explicit GCP identity — check project default, then fall back to block.
+		// No explicit GCP identity on the request. Resolve via the precedence
+		// chain: project default (annotations) -> hub default (HubSetting store)
+		// -> secure "block". A project that explicitly sets mode "block"
+		// SUPPRESSES the hub default; a project that says nothing (empty mode)
+		// flows through to the hub default.
 		projectSettings := projectSettingsFromAnnotations(project)
 		switch projectSettings.DefaultGCPIdentityMode {
 		case store.GCPMetadataModePassthrough:
@@ -696,11 +700,16 @@ func (s *Server) createAgentInProject(
 					MetadataMode: store.GCPMetadataModeBlock,
 				}
 			}
-		default:
-			// No project default or explicit "block" — secure default
+		case store.GCPMetadataModeBlock:
+			// Project EXPLICITLY opted out — honor block, do not consult the
+			// hub default.
 			agent.AppliedConfig.GCPIdentity = &store.GCPIdentityConfig{
 				MetadataMode: store.GCPMetadataModeBlock,
 			}
+		default:
+			// Project said nothing — consult the hub-wide default, then fall
+			// back to block.
+			agent.AppliedConfig.GCPIdentity = s.resolveHubDefaultGCPIdentity(ctx)
 		}
 	}
 

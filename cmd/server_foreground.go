@@ -473,6 +473,9 @@ func runServerStart(cmd *cobra.Command, args []string) error {
 							}
 							if cfg.Database.Driver != "" && cfg.Database.Driver != "sqlite" {
 								hubCreds["database_driver"] = cfg.Database.Driver
+								// hubCreds carries the live, unredacted DSN (including
+								// password) to the broker plugin over its Configure RPC.
+								// This value must never be logged or printed in the clear.
 								hubCreds["database_url"] = cfg.Database.URL
 							}
 							// Inject chat integration secrets from the secret backend.
@@ -1412,7 +1415,7 @@ func initHubServer(ctx context.Context, cfg *config.GlobalConfig, s store.Store,
 	go hubSrv.SyncAllHarnessConfigsFromStorage(ctx)
 	go hubSrv.SyncAllTemplatesFromStorage(ctx)
 
-	log.Printf("Database: %s (%s)", cfg.Database.Driver, cfg.Database.URL)
+	logging.Subsystem("hub").Info("database configured", "driver", cfg.Database.Driver, "url", config.RedactDSN(cfg.Database.Driver, cfg.Database.URL))
 
 	// --- Settings-DB Phase 3: OperationalSettings wiring (§3.9) ---
 	// Gated on postgres: in SQLite/workstation mode the legacy file path is

@@ -188,6 +188,16 @@ type DatabaseConfig struct {
 	ConnMaxIdleTime string `json:"conn_max_idle_time" yaml:"conn_max_idle_time" koanf:"conn_max_idle_time"`
 }
 
+// String implements fmt.Stringer so that logging a DatabaseConfig (via %s or
+// %v) never leaks the DSN's embedded password. It is defense-in-depth:
+// callers should still prefer RedactDSN directly when logging the URL field
+// alone. Note this only stringifies the URL field through RedactDSN — it
+// never formats the receiver itself, so there is no risk of recursing back
+// into this method.
+func (d DatabaseConfig) String() string {
+	return fmt.Sprintf("{driver:%s url:%s}", d.Driver, RedactDSN(d.Driver, d.URL))
+}
+
 // ConnMaxLifetimeDuration parses ConnMaxLifetime into a time.Duration.
 // An empty value yields 0 (unlimited). A malformed value returns an error.
 func (d DatabaseConfig) ConnMaxLifetimeDuration() (time.Duration, error) {

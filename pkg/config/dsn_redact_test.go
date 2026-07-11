@@ -30,34 +30,42 @@ func TestRedactDSN(t *testing.T) {
 		wantExpr string // exact expected output, when deterministic
 	}{
 		{
-			name:     "url form postgres scheme",
-			driver:   "postgres",
-			dsn:      "postgres://user:" + testPassword + "@host:5432/db?sslmode=require",
-			wantExpr: "postgres://user:xxxxx@host:5432/db?sslmode=require",
+			name:   "url form postgres scheme",
+			driver: "postgres",
+			dsn:    "postgres://user:" + testPassword + "@host:5432/db?sslmode=require",
+			// Credential present: whole DSN masked, matching admin_settings.go.
+			wantExpr: MaskedValue,
 		},
 		{
 			name:     "url form postgresql scheme",
 			driver:   "postgres",
 			dsn:      "postgresql://user:" + testPassword + "@host:5432/db",
-			wantExpr: "postgresql://user:xxxxx@host:5432/db",
+			wantExpr: MaskedValue,
 		},
 		{
 			name:     "keyword form",
 			driver:   "postgres",
 			dsn:      "host=h port=5432 user=u password=" + testPassword + " dbname=db sslmode=require",
-			wantExpr: "host=h port=5432 user=u password=xxxxx dbname=db sslmode=require",
+			wantExpr: MaskedValue,
 		},
 		{
 			name:     "keyword form with spaces around equals",
 			driver:   "postgres",
 			dsn:      "host=h user=u password = " + testPassword + " dbname=db",
-			wantExpr: "host=h user=u password = xxxxx dbname=db",
+			wantExpr: MaskedValue,
 		},
 		{
-			name:     "url with no password",
-			driver:   "postgres",
-			dsn:      "postgres://user@host:5432/db?sslmode=require",
+			name:   "url with no password passes through",
+			driver: "postgres",
+			dsn:    "postgres://user@host:5432/db?sslmode=require",
+			// No credential to hide; keep the DSN legible in logs.
 			wantExpr: "postgres://user@host:5432/db?sslmode=require",
+		},
+		{
+			name:     "keyword form with no password passes through",
+			driver:   "postgres",
+			dsn:      "host=h port=5432 user=u dbname=db sslmode=require",
+			wantExpr: "host=h port=5432 user=u dbname=db sslmode=require",
 		},
 		{
 			name:   "sqlite path passthrough",
@@ -92,8 +100,8 @@ func TestRedactDSN_MalformedFailsClosed(t *testing.T) {
 	if containsPassword(got) {
 		t.Fatalf("RedactDSN returned %q, which still contains the password", got)
 	}
-	if got != redactedPlaceholder {
-		t.Errorf("RedactDSN(malformed) = %q, want fail-closed placeholder %q", got, redactedPlaceholder)
+	if got != MaskedValue {
+		t.Errorf("RedactDSN(malformed) = %q, want fail-closed mask %q", got, MaskedValue)
 	}
 }
 

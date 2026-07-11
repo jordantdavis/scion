@@ -68,8 +68,8 @@ func TestDatabaseConfiguredLogRedactsPassword(t *testing.T) {
 			if strings.Contains(out, tt.password) {
 				t.Fatalf("log output leaked password %q: %s", tt.password, out)
 			}
-			if !strings.Contains(out, "xxxxx") {
-				t.Fatalf("expected redacted placeholder in log output, got: %s", out)
+			if !strings.Contains(out, config.MaskedValue) {
+				t.Fatalf("expected redaction mask %q in log output, got: %s", config.MaskedValue, out)
 			}
 		})
 	}
@@ -87,8 +87,8 @@ func TestMigrateStorageOpeningDatabaseLogRedactsPassword(t *testing.T) {
 			if strings.Contains(out.String(), tt.password) {
 				t.Fatalf("log output leaked password %q: %s", tt.password, out.String())
 			}
-			if !strings.Contains(out.String(), "xxxxx") {
-				t.Fatalf("expected redacted placeholder in log output, got: %s", out.String())
+			if !strings.Contains(out.String(), config.MaskedValue) {
+				t.Fatalf("expected redaction mask %q in log output, got: %s", config.MaskedValue, out.String())
 			}
 		})
 	}

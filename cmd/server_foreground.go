@@ -475,7 +475,9 @@ func runServerStart(cmd *cobra.Command, args []string) error {
 								hubCreds["database_driver"] = cfg.Database.Driver
 								// hubCreds carries the live, unredacted DSN (including
 								// password) to the broker plugin over its Configure RPC.
-								// This value must never be logged or printed in the clear.
+								// Per .design/hosted/secrets.md §7.4 this value must
+								// never be logged at any tier (Hub, Broker, Agent); if a
+								// sink ever needs to log it, redact via config.RedactDSN.
 								hubCreds["database_url"] = cfg.Database.URL
 							}
 							// Inject chat integration secrets from the secret backend.

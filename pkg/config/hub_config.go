@@ -189,11 +189,12 @@ type DatabaseConfig struct {
 }
 
 // String implements fmt.Stringer so that logging a DatabaseConfig (via %s or
-// %v) never leaks the DSN's embedded password. It is defense-in-depth:
-// callers should still prefer RedactDSN directly when logging the URL field
-// alone. Note this only stringifies the URL field through RedactDSN — it
-// never formats the receiver itself, so there is no risk of recursing back
-// into this method.
+// %v) never leaks the DSN's embedded password, per .design/hosted/secrets.md
+// §7.4 ("Secret values MUST NOT appear in logs at any tier"). It is
+// defense-in-depth: callers should still prefer RedactDSN directly when
+// logging the URL field alone. Note this only stringifies the URL field
+// through RedactDSN — it never formats the receiver itself, so there is no
+// risk of recursing back into this method.
 func (d DatabaseConfig) String() string {
 	return fmt.Sprintf("{driver:%s url:%s}", d.Driver, RedactDSN(d.Driver, d.URL))
 }

@@ -20,28 +20,43 @@ import (
 	"strings"
 )
 
-// redactedPlaceholder is returned in place of any DSN whose password cannot
-// be confidently located and stripped. Fail closed rather than risk leaking
-// a credential in logs.
-const redactedPlaceholder = "(redacted)"
+// MaskedValue is the placeholder written in place of a secret-bearing DSN.
+//
+// It matches the masking convention already used across the codebase for
+// sensitive settings: pkg/hub/admin_settings.go masks the database URL — along
+// with dev/broker tokens and OAuth secrets — as "********" before returning
+// them from the admin API (surfaced in the admin settings UI). Reusing the
+// same token keeps log redaction consistent with how the very same value is
+// treated in the UI, and satisfies .design/hosted/secrets.md §7.4: "Secret
+// values MUST NOT appear in logs at any tier (Hub, Broker, Agent)."
+const MaskedValue = "********"
 
 // keywordPasswordPattern matches a `password=...` (or `password = ...`) token
 // in a libpq keyword/value connection string, e.g.
-// "host=h port=5432 user=u password=p dbname=db". The value runs until the
-// next whitespace, matching libpq's own unquoted keyword/value parsing.
-var keywordPasswordPattern = regexp.MustCompile(`(?i)(password\s*=\s*)(\S+)`)
+// "host=h port=5432 user=u password=p dbname=db".
+var keywordPasswordPattern = regexp.MustCompile(`(?i)password\s*=\s*\S+`)
 
-// RedactDSN returns dsn with any embedded password replaced by "xxxxx", safe
-// for logging. It understands both DSN forms accepted by lib/pq and
-// pgx: URL-form ("postgres://user:pass@host/db") and libpq keyword/value
-// form ("host=h user=u password=p").
+// keywordPairPattern matches any `key=value` token, used only to sniff whether
+// a string looks like a libpq keyword/value DSN.
+var keywordPairPattern = regexp.MustCompile(`(?i)\b[a-z_]+\s*=\s*\S+`)
+
+// RedactDSN returns a log-safe rendering of dsn for the given driver.
 //
-// Non-postgres drivers (e.g. sqlite file paths, which carry no credential)
-// are returned unchanged.
+// Postgres DSNs may embed a password in either URL-form
+// ("postgres://user:pass@host/db") or libpq keyword/value form
+// ("host=h user=u password=p"). When a credential is present, RedactDSN
+// replaces the ENTIRE DSN with MaskedValue ("********") — the same treatment
+// the admin settings API gives the database URL (pkg/hub/admin_settings.go) —
+// rather than a structured partial mask. This matches the project's masking
+// convention and is safe because the host/database/query portions are not
+// needed in logs (the driver is logged as a separate field).
 //
-// For postgres/postgresql drivers, if dsn cannot be confidently parsed as
-// either recognized form, RedactDSN fails closed and returns a fully-masked
-// placeholder rather than risk returning a string that still contains the
+// DSNs with no credential — passwordless URL-form, keyword-form without a
+// password token, or non-postgres drivers such as sqlite file paths — are
+// returned unchanged, since there is no secret to hide.
+//
+// If dsn looks like a postgres DSN but cannot be confidently classified,
+// RedactDSN fails closed and returns MaskedValue rather than risk echoing a
 // password.
 func RedactDSN(driver, dsn string) string {
 	if !isPostgresDriver(driver) {
@@ -49,21 +64,20 @@ func RedactDSN(driver, dsn string) string {
 	}
 
 	if u, err := url.Parse(dsn); err == nil && isURLForm(u) {
-		return u.Redacted()
+		if _, hasPassword := u.User.Password(); hasPassword {
+			return MaskedValue
+		}
+		return dsn // URL-form with no password: nothing secret to redact.
 	}
 
 	if keywordPasswordPattern.MatchString(dsn) {
-		return keywordPasswordPattern.ReplaceAllString(dsn, "${1}xxxxx")
+		return MaskedValue
 	}
-
-	// No recognizable password token: if the string otherwise looks like a
-	// keyword-form DSN (has other "key=value" pairs) there is no password to
-	// redact, so it's safe to return as-is. Otherwise fail closed.
 	if isKeywordForm(dsn) {
-		return dsn
+		return dsn // keyword-form carrying no password token.
 	}
 
-	return redactedPlaceholder
+	return MaskedValue // Unrecognized postgres DSN: fail closed.
 }
 
 func isPostgresDriver(driver string) bool {
@@ -87,10 +101,6 @@ func isURLForm(u *url.URL) bool {
 		return false
 	}
 }
-
-// keywordPairPattern matches any `key=value` token, used only to sniff
-// whether a string looks like a libpq keyword/value DSN.
-var keywordPairPattern = regexp.MustCompile(`(?i)\b[a-z_]+\s*=\s*\S+`)
 
 func isKeywordForm(dsn string) bool {
 	return keywordPairPattern.MatchString(dsn)

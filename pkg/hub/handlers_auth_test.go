@@ -445,6 +445,79 @@ func TestCLIAuthProviders_ReturnsConfiguredProviders(t *testing.T) {
 	}
 }
 
+// TestCLIAuthProviders_IncludesCustom confirms /api/v1/auth/providers derives
+// its list from hubclient.OAuthProviderOrder() + IsProviderConfiguredForClient
+// (see handleCLIAuthProviders / ConfiguredProvidersForClient) so the custom
+// provider appears automatically once both its credentials and its
+// provider-level endpoint URLs (OAuthConfig.Custom) are set — no per-provider
+// hardcoding was needed in the handler itself.
+func TestCLIAuthProviders_IncludesCustom(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.oauthService = NewOAuthService(OAuthConfig{
+		Custom: OAuthCustomProviderConfig{
+			AuthorizeURL: "https://sso.acme.com/a", TokenURL: "https://sso.acme.com/t", UserinfoURL: "https://sso.acme.com/u",
+		},
+		CLI: OAuthClientConfig{
+			GitHub: OAuthProviderConfig{ClientID: "cli-gh-id", ClientSecret: "cli-gh-secret"},
+			Custom: OAuthProviderConfig{ClientID: "cli-custom-id", ClientSecret: "cli-custom-secret"},
+		},
+	})
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/auth/providers?clientType=cli", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp CLIAuthProvidersResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(resp.Providers) != 2 || resp.Providers[0] != "github" || resp.Providers[1] != "custom" {
+		t.Fatalf("expected providers [github custom] (registry order), got %v", resp.Providers)
+	}
+}
+
+// TestCLIDeviceAuthorize_CustomProvider exercises the custom provider through
+// the full HTTP handler (handleCLIDeviceAuthorize, handlers_auth.go:1020),
+// which gates on IsProviderConfiguredForClient(OAuthClientTypeDevice, "custom").
+// That gate now requires both device-client credentials AND the provider-level
+// endpoint URLs (OAuthConfig.Custom) to be set; this test proves the custom
+// device flow built in Task 6 is actually reachable at the HTTP layer rather
+// than blocked by the gate.
+func TestCLIDeviceAuthorize_CustomProvider(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"device_code":"dc-1","user_code":"ABCD-1234","verification_uri":"https://sso.acme.com/activate","expires_in":900,"interval":1}`))
+	}))
+	defer idp.Close()
+
+	srv, _ := testServer(t)
+	srv.oauthService = NewOAuthService(OAuthConfig{
+		Custom: OAuthCustomProviderConfig{
+			AuthorizeURL: "https://sso.acme.com/a", TokenURL: "https://sso.acme.com/t", UserinfoURL: "https://sso.acme.com/u",
+			DeviceAuthorizationURL: idp.URL,
+		},
+		Device: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "cid", ClientSecret: "sec"}},
+	})
+
+	body := CLIDeviceAuthorizeRequest{Provider: "custom"}
+	rec := doRequestNoAuth(t, srv, http.MethodPost, "/api/v1/auth/cli/device", body)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp CLIDeviceAuthorizeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.UserCode != "ABCD-1234" {
+		t.Fatalf("resp = %+v", resp)
+	}
+}
+
 func TestCLIAuthProviders_InvalidClientType(t *testing.T) {
 	srv, _ := testServer(t)
 

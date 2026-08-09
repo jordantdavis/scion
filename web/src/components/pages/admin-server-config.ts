@@ -90,6 +90,7 @@ interface V1OAuthProviderConfig {
 interface V1OAuthClientConfig {
   google?: V1OAuthProviderConfig;
   github?: V1OAuthProviderConfig;
+  custom?: V1OAuthProviderConfig;
 }
 
 interface V1OAuthConfig {
@@ -3553,6 +3554,7 @@ export class ScionPageAdminServerConfig extends LitElement {
       const providers: { name: string; p: V1OAuthProviderConfig | undefined }[] = [
         { name: 'Google', p: cfg.google },
         { name: 'GitHub', p: cfg.github },
+        { name: 'Custom', p: cfg.custom },
       ];
       const configured = providers.filter((p) => p.p?.client_id);
       if (configured.length === 0) return nothing;

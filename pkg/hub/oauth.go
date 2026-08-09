@@ -249,10 +249,24 @@ func (s *OAuthService) getClientConfig(clientType OAuthClientType) OAuthClientCo
 }
 
 // IsProviderConfiguredForClient returns true if the specified provider is configured
-// for the given client type.
+// for the given client type. The custom provider additionally requires its
+// provider-level endpoint URLs (s.config.Custom) to be set, since credentials
+// alone are not enough to drive a config-driven corporate SSO flow.
 func (s *OAuthService) IsProviderConfiguredForClient(clientType OAuthClientType, provider string) bool {
 	cfg := s.getClientConfig(clientType)
-	return cfg.IsProviderConfigured(provider)
+	if !cfg.IsProviderConfigured(provider) {
+		return false
+	}
+	if provider == hubclient.OAuthProviderCustom {
+		return s.config.Custom.IsConfigured()
+	}
+	return true
+}
+
+// CustomDisplayName returns the display name for the custom OAuth provider,
+// falling back to "SSO" when unset.
+func (s *OAuthService) CustomDisplayName() string {
+	return s.config.Custom.EffectiveDisplayName()
 }
 
 // ConfiguredProvidersForClient returns the configured OAuth providers for the

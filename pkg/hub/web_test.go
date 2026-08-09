@@ -2144,6 +2144,31 @@ func TestAuthProviders_WithProviders(t *testing.T) {
 	assert.False(t, result["github"])
 }
 
+func TestAuthProvidersIncludesCustom(t *testing.T) {
+	ws := newTestWebServer(t, WebServerConfig{})
+	ws.SetOAuthService(NewOAuthService(OAuthConfig{
+		Custom: OAuthCustomProviderConfig{
+			DisplayName:  "Acme SSO",
+			AuthorizeURL: "https://sso.acme.com/a", TokenURL: "https://sso.acme.com/t", UserinfoURL: "https://sso.acme.com/u",
+		},
+		Web: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "cid", ClientSecret: "sec"}},
+	}))
+
+	req := httptest.NewRequest("GET", "/auth/providers", nil)
+	rec := httptest.NewRecorder()
+	ws.Handler().ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	body, _ := io.ReadAll(resp.Body)
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(body, &result))
+	assert.Equal(t, true, result["custom"])
+	assert.Equal(t, "Acme SSO", result["customDisplayName"])
+	assert.Equal(t, false, result["google"])
+}
+
 // --- SSR Prefetch Tests ---
 
 func TestSafeJSONForHTML(t *testing.T) {

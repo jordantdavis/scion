@@ -3391,14 +3391,18 @@ func (rw *responseWriter) Flush() {
 func logOAuthProviders(clientType string, cfg OAuthClientConfig) {
 	googleConfigured := cfg.Google.ClientID != "" && cfg.Google.ClientSecret != ""
 	githubConfigured := cfg.GitHub.ClientID != "" && cfg.GitHub.ClientSecret != ""
+	customConfigured := cfg.Custom.ClientID != "" && cfg.Custom.ClientSecret != ""
 
-	if googleConfigured || githubConfigured {
+	if googleConfigured || githubConfigured || customConfigured {
 		var providers []string
 		if googleConfigured {
 			providers = append(providers, "Google")
 		}
 		if githubConfigured {
 			providers = append(providers, "GitHub")
+		}
+		if customConfigured {
+			providers = append(providers, "Custom")
 		}
 		slog.Info("OAuth providers configured", "client", clientType, "providers", providers)
 	} else {

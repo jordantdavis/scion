@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1770,6 +1771,126 @@ func TestHandleOAuthCallback_CookieOverflowRetry(t *testing.T) {
 			"refresh token should also be stripped")
 		assert.Nil(t, restored.Values[sessKeyHubTokenExpiry],
 			"token expiry should also be stripped")
+	}
+}
+
+// TestOAuthLoginAndCallback_CustomProvider_EndToEnd drives the full custom
+// OAuth 2.0 provider flow — GET /auth/login/custom through GET
+// /auth/callback/custom — against a fake corporate IdP, proving custom
+// behaves identically to google/github through the same handler pipeline.
+//
+// The fake IdP exposes a bespoke "/me" endpoint (not an OIDC-standard one)
+// keyed by non-default claim names ("mail"/"displayName"/"photo" instead of
+// "email"/"name"/"picture"), so a passing test proves claim mapping is
+// actually wired end to end rather than merely falling back to defaults.
+func TestOAuthLoginAndCallback_CustomProvider_EndToEnd(t *testing.T) {
+	var gotTokenReq url.Values
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = r.ParseForm()
+			gotTokenReq = r.PostForm
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"custom-access-token","token_type":"Bearer"}`))
+		case "/me":
+			if r.Header.Get("Authorization") != "Bearer custom-access-token" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"sub":"corp-42",
+				"mail":"jordan@acme.example",
+				"displayName":"Jordan Corp",
+				"photo":"https://sso.acme.example/avatar.png"
+			}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer idp.Close()
+
+	ws := newTestWebServer(t, WebServerConfig{BaseURL: "http://localhost:8080"})
+	ws.oauthService = NewOAuthService(OAuthConfig{
+		Custom: OAuthCustomProviderConfig{
+			AuthorizeURL: idp.URL + "/authorize",
+			TokenURL:     idp.URL + "/token",
+			UserinfoURL:  idp.URL + "/me",
+			EmailClaim:   "mail",
+			NameClaim:    "displayName",
+			AvatarClaim:  "photo",
+		},
+		Web: OAuthClientConfig{
+			Custom: OAuthProviderConfig{ClientID: "test-client-id", ClientSecret: "test-client-secret"},
+		},
+	})
+	ws.store = newProxyAuthStore()
+
+	// ---- Step 0: pre-seed a session with a returnTo, as sessionAuthMiddleware
+	// would when an unauthenticated browser hits a protected route. ----
+	reqSeed := httptest.NewRequest(http.MethodGet, "/projects", nil)
+	recSeed := httptest.NewRecorder()
+	seedSess, err := ws.sessionStore.Get(reqSeed, webSessionName)
+	require.NoError(t, err)
+	seedSess.Values[sessKeyReturnTo] = "/projects"
+	require.NoError(t, seedSess.Save(reqSeed, recSeed))
+	seedCookies := recSeed.Result().Cookies()
+	require.NotEmpty(t, seedCookies, "seed must produce a session cookie")
+
+	// ---- Step 1: GET /auth/login/custom must redirect to the fake IdP's
+	// authorize endpoint with the correct OAuth params. ----
+	reqLogin := httptest.NewRequest(http.MethodGet, "/auth/login/custom", nil)
+	for _, c := range seedCookies {
+		reqLogin.AddCookie(c)
+	}
+	recLogin := httptest.NewRecorder()
+	ws.Handler().ServeHTTP(recLogin, reqLogin)
+
+	loginResp := recLogin.Result()
+	require.Equal(t, http.StatusFound, loginResp.StatusCode)
+
+	location := loginResp.Header.Get("Location")
+	locURL, err := url.Parse(location)
+	require.NoError(t, err, "login redirect Location must be a valid URL")
+	assert.Equal(t, idp.URL+"/authorize", locURL.Scheme+"://"+locURL.Host+locURL.Path,
+		"login must redirect to the configured custom authorize URL")
+	locQuery := locURL.Query()
+	assert.Equal(t, "test-client-id", locQuery.Get("client_id"))
+	assert.Equal(t, "code", locQuery.Get("response_type"))
+	assert.Equal(t, "http://localhost:8080/auth/callback/custom", locQuery.Get("redirect_uri"))
+	assert.Equal(t, "openid email profile", locQuery.Get("scope"), "scope should fall back to the default")
+	state := locQuery.Get("state")
+	require.NotEmpty(t, state, "login must generate a CSRF state")
+
+	loginCookies := loginResp.Cookies()
+	require.NotEmpty(t, loginCookies, "login must set a session cookie carrying the OAuth state")
+
+	// ---- Step 2: GET /auth/callback/custom with the matching state and a
+	// code must exchange it against the fake IdP, provision a user from the
+	// mapped claims, and redirect to the returnTo captured at Step 0. ----
+	callbackURL := "/auth/callback/custom?code=test-auth-code&state=" + state
+	reqCallback := httptest.NewRequest(http.MethodGet, callbackURL, nil)
+	for _, c := range loginCookies {
+		reqCallback.AddCookie(c)
+	}
+	recCallback := httptest.NewRecorder()
+	ws.Handler().ServeHTTP(recCallback, reqCallback)
+
+	callbackResp := recCallback.Result()
+	require.Equal(t, http.StatusFound, callbackResp.StatusCode)
+	assert.Equal(t, "/projects", callbackResp.Header.Get("Location"),
+		"callback must redirect to the returnTo captured before login")
+
+	require.Equal(t, "test-auth-code", gotTokenReq.Get("code"), "token exchange must forward the authorization code")
+	assert.Equal(t, "test-client-id", gotTokenReq.Get("client_id"))
+	assert.Equal(t, "test-client-secret", gotTokenReq.Get("client_secret"))
+
+	store := ws.store.(*proxyAuthStore)
+	require.Len(t, store.users, 1, "callback must provision exactly one user")
+	for _, u := range store.users {
+		assert.Equal(t, "jordan@acme.example", u.Email, "email must come from the mapped 'mail' claim")
+		assert.Equal(t, "Jordan Corp", u.DisplayName, "display name must come from the mapped 'displayName' claim")
+		assert.Equal(t, "https://sso.acme.example/avatar.png", u.AvatarURL, "avatar must come from the mapped 'photo' claim")
 	}
 }
 

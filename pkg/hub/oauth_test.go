@@ -17,6 +17,8 @@ package hub
 import (
 	"strings"
 	"testing"
+
+	"github.com/GoogleCloudPlatform/scion/pkg/hubclient"
 )
 
 func TestOAuthConfig_IsConfigured(t *testing.T) {
@@ -479,5 +481,39 @@ func TestOAuthService_IsProviderConfiguredForClient(t *testing.T) {
 				t.Errorf("IsProviderConfiguredForClient(%s, %s) = %v, want %v", tc.clientType, tc.provider, got, tc.expected)
 			}
 		})
+	}
+}
+
+func TestCustomProviderConfigDefaults(t *testing.T) {
+	c := &OAuthCustomProviderConfig{}
+	if c.IsConfigured() {
+		t.Fatal("empty custom config reported configured")
+	}
+	if got := c.EffectiveDisplayName(); got != "SSO" {
+		t.Fatalf("EffectiveDisplayName = %q, want SSO", got)
+	}
+	if got := c.EffectiveScopes(); got != "openid email profile" {
+		t.Fatalf("EffectiveScopes = %q", got)
+	}
+	if c.EffectiveEmailClaim() != "email" || c.EffectiveNameClaim() != "name" || c.EffectiveAvatarClaim() != "picture" {
+		t.Fatal("claim defaults wrong")
+	}
+	c.DisplayName, c.EmailClaim = "Acme SSO", "mail"
+	c.AuthorizeURL, c.TokenURL, c.UserinfoURL = "https://a", "https://t", "https://u"
+	if !c.IsConfigured() || c.EffectiveDisplayName() != "Acme SSO" || c.EffectiveEmailClaim() != "mail" {
+		t.Fatal("overrides not honored")
+	}
+}
+
+func TestClientConfigCustomArm(t *testing.T) {
+	cc := &OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "id", ClientSecret: "sec"}}
+	if !cc.IsConfigured() {
+		t.Fatal("custom-only client config reported unconfigured")
+	}
+	if !cc.IsProviderConfigured(hubclient.OAuthProviderCustom) {
+		t.Fatal("IsProviderConfigured(custom) = false")
+	}
+	if got := cc.GetProvider(hubclient.OAuthProviderCustom); got.ClientID != "id" {
+		t.Fatalf("GetProvider(custom).ClientID = %q", got.ClientID)
 	}
 }

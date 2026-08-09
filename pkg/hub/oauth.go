@@ -37,11 +37,12 @@ type OAuthProviderConfig struct {
 type OAuthClientConfig struct {
 	Google OAuthProviderConfig
 	GitHub OAuthProviderConfig
+	Custom OAuthProviderConfig
 }
 
 // IsConfigured returns true if at least one OAuth provider is configured.
 func (c *OAuthClientConfig) IsConfigured() bool {
-	return c.Google.ClientID != "" || c.GitHub.ClientID != ""
+	return c.Google.ClientID != "" || c.GitHub.ClientID != "" || c.Custom.ClientID != ""
 }
 
 // IsProviderConfigured returns true if the specified provider is configured.
@@ -51,6 +52,8 @@ func (c *OAuthClientConfig) IsProviderConfigured(provider string) bool {
 		return c.Google.ClientID != "" && c.Google.ClientSecret != ""
 	case hubclient.OAuthProviderGitHub:
 		return c.GitHub.ClientID != "" && c.GitHub.ClientSecret != ""
+	case hubclient.OAuthProviderCustom:
+		return c.Custom.ClientID != "" && c.Custom.ClientSecret != ""
 	default:
 		return false
 	}
@@ -63,9 +66,73 @@ func (c *OAuthClientConfig) GetProvider(provider string) OAuthProviderConfig {
 		return c.Google
 	case hubclient.OAuthProviderGitHub:
 		return c.GitHub
+	case hubclient.OAuthProviderCustom:
+		return c.Custom
 	default:
 		return OAuthProviderConfig{}
 	}
+}
+
+// OAuthCustomProviderConfig holds provider-level settings for the custom OAuth
+// provider (mirrors the pkg/config version). Unlike Google/GitHub, the custom
+// provider's endpoints, scopes, and claim mapping are configuration-driven
+// rather than hardcoded, since it targets arbitrary corporate SSO providers.
+type OAuthCustomProviderConfig struct {
+	DisplayName            string
+	AuthorizeURL           string
+	TokenURL               string
+	UserinfoURL            string
+	DeviceAuthorizationURL string
+	Scopes                 string
+	EmailClaim             string
+	NameClaim              string
+	AvatarClaim            string
+}
+
+// IsConfigured returns true if the required endpoint URLs are set. Credential
+// presence (client ID/secret) is tracked separately via OAuthClientConfig.
+func (c *OAuthCustomProviderConfig) IsConfigured() bool {
+	return c.AuthorizeURL != "" && c.TokenURL != "" && c.UserinfoURL != ""
+}
+
+// EffectiveDisplayName returns DisplayName, defaulting to "SSO" if unset.
+func (c *OAuthCustomProviderConfig) EffectiveDisplayName() string {
+	if c.DisplayName == "" {
+		return "SSO"
+	}
+	return c.DisplayName
+}
+
+// EffectiveScopes returns Scopes, defaulting to "openid email profile" if unset.
+func (c *OAuthCustomProviderConfig) EffectiveScopes() string {
+	if c.Scopes == "" {
+		return "openid email profile"
+	}
+	return c.Scopes
+}
+
+// EffectiveEmailClaim returns EmailClaim, defaulting to "email" if unset.
+func (c *OAuthCustomProviderConfig) EffectiveEmailClaim() string {
+	if c.EmailClaim == "" {
+		return "email"
+	}
+	return c.EmailClaim
+}
+
+// EffectiveNameClaim returns NameClaim, defaulting to "name" if unset.
+func (c *OAuthCustomProviderConfig) EffectiveNameClaim() string {
+	if c.NameClaim == "" {
+		return "name"
+	}
+	return c.NameClaim
+}
+
+// EffectiveAvatarClaim returns AvatarClaim, defaulting to "picture" if unset.
+func (c *OAuthCustomProviderConfig) EffectiveAvatarClaim() string {
+	if c.AvatarClaim == "" {
+		return "picture"
+	}
+	return c.AvatarClaim
 }
 
 // OAuthConfig holds configuration for all OAuth providers.
@@ -77,6 +144,8 @@ type OAuthConfig struct {
 	CLI OAuthClientConfig
 	// Device OAuth client settings (for device authorization grant / headless flows).
 	Device OAuthClientConfig
+	// Custom provider-level settings (endpoint URLs, scopes, claim mapping).
+	Custom OAuthCustomProviderConfig
 }
 
 // IsConfigured returns true if at least one OAuth provider is configured.

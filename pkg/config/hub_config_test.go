@@ -395,6 +395,27 @@ func TestLoadGlobalConfigOAuthEnvOverride(t *testing.T) {
 	}
 }
 
+func TestCustomOAuthEnvOverride(t *testing.T) {
+	t.Setenv("SCION_SERVER_OAUTH_CUSTOM_AUTHORIZEURL", "https://sso.example.com/authorize")
+	t.Setenv("SCION_SERVER_OAUTH_CUSTOM_DISPLAYNAME", "Acme SSO")
+	t.Setenv("SCION_SERVER_OAUTH_WEB_CUSTOM_CLIENTID", "web-id")
+
+	cfg, err := LoadGlobalConfig("")
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if cfg.OAuth.Custom.AuthorizeURL != "https://sso.example.com/authorize" {
+		t.Fatalf("AuthorizeURL = %q", cfg.OAuth.Custom.AuthorizeURL)
+	}
+	if cfg.OAuth.Custom.DisplayName != "Acme SSO" {
+		t.Fatalf("DisplayName = %q", cfg.OAuth.Custom.DisplayName)
+	}
+	if cfg.OAuth.Web.Custom.ClientID != "web-id" {
+		t.Fatalf("Web.Custom.ClientID = %q", cfg.OAuth.Web.Custom.ClientID)
+	}
+}
+
 // TestHubEndpointConfiguration tests the Hub endpoint configuration from file and env.
 // This verifies Fix 2 from progress-report.md: Hub config includes endpoint field.
 func TestHubEndpointConfiguration(t *testing.T) {

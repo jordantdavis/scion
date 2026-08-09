@@ -159,6 +159,48 @@ func (c *OAuthConfig) IsProviderConfigured(provider string) bool {
 	return c.Web.IsProviderConfigured(provider) || c.CLI.IsProviderConfigured(provider) || c.Device.IsProviderConfigured(provider)
 }
 
+// ValidateOAuthConfig checks custom-provider invariants at server start so a
+// misconfigured corporate SSO fails fast instead of at login time.
+func ValidateOAuthConfig(cfg *OAuthConfig) error {
+	credsSet := cfg.Web.Custom.ClientID != "" || cfg.CLI.Custom.ClientID != "" || cfg.Device.Custom.ClientID != ""
+	if !credsSet {
+		return nil
+	}
+	required := map[string]string{
+		"oauth.custom.authorizeUrl": cfg.Custom.AuthorizeURL,
+		"oauth.custom.tokenUrl":     cfg.Custom.TokenURL,
+		"oauth.custom.userinfoUrl":  cfg.Custom.UserinfoURL,
+	}
+	for key, val := range required {
+		if val == "" {
+			return fmt.Errorf("custom OAuth provider: %s is required when custom client credentials are set", key)
+		}
+	}
+	urls := map[string]string{
+		"oauth.custom.authorizeUrl":           cfg.Custom.AuthorizeURL,
+		"oauth.custom.tokenUrl":               cfg.Custom.TokenURL,
+		"oauth.custom.userinfoUrl":            cfg.Custom.UserinfoURL,
+		"oauth.custom.deviceAuthorizationUrl": cfg.Custom.DeviceAuthorizationURL,
+	}
+	for key, raw := range urls {
+		if raw == "" {
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" {
+			return fmt.Errorf("custom OAuth provider: %s is not a valid URL: %q", key, raw)
+		}
+		host := u.Hostname()
+		if u.Scheme != "https" && host != "localhost" && host != "127.0.0.1" {
+			return fmt.Errorf("custom OAuth provider: %s must use https (got %q)", key, raw)
+		}
+	}
+	if cfg.Device.Custom.ClientID != "" && cfg.Custom.DeviceAuthorizationURL == "" {
+		return fmt.Errorf("custom OAuth provider: oauth.device.custom credentials set but oauth.custom.deviceAuthorizationUrl is empty")
+	}
+	return nil
+}
+
 // OAuthClientType represents the type of client (web or CLI).
 type OAuthClientType = hubclient.OAuthClientType
 

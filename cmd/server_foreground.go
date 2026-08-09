@@ -1469,6 +1469,10 @@ func initHubServer(ctx context.Context, cfg *config.GlobalConfig, s store.Store,
 		OIDCConfig:              cfg.OIDC,
 	}
 
+	if err := hub.ValidateOAuthConfig(&hubCfg.OAuthConfig); err != nil {
+		return nil, fmt.Errorf("invalid OAuth configuration: %w", err)
+	}
+
 	// In hosted mode every replica must share the same session secret for
 	// cookies and JWT signing keys to work across the load balancer. Running
 	// without one means each replica generates its own ephemeral key, which

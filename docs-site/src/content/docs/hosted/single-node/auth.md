@@ -91,9 +91,11 @@ The `custom` provider only appears (in `/auth/providers`, the login page, and th
 CLI's provider list) once **both** of the following are true: the three endpoint
 URLs (`authorize_url`, `token_url`, `userinfo_url`) are set under `oauth.custom`,
 **and** a non-empty `client_id`/`client_secret` pair exists for that client type
-under `oauth.<web|cli|device>.custom`. If either half is missing, the provider is
-silently inactive — no startup error and no log line — so double-check both halves
-are filled in for each client type you intend to support:
+under `oauth.<web|cli|device>.custom`. The two halves fail differently if you get
+only one of them: credentials set without the endpoint URLs is a hard startup
+error; endpoint URLs set without any credentials leaves the provider silently
+inactive — no startup error and no log line. Double-check both halves are filled
+in for each client type you intend to support:
 
 ```yaml
 server:
@@ -113,7 +115,7 @@ server:
     cli:
       custom: { client_id: "<your-client-id>", client_secret: "<your-client-secret>" }
     device:
-      custom: { client_id: "<your-client-id>", client_secret: "<your-client-secret>" } # only needed if device_authorization_url is set
+      custom: { client_id: "", client_secret: "" }           # leave empty unless device_authorization_url (above) is also set
 ```
 
 As with Google/GitHub, client secrets should not be committed to `settings.yaml` — set

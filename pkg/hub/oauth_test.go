@@ -520,34 +520,64 @@ func TestClientConfigCustomArm(t *testing.T) {
 
 func TestValidateOAuthConfigCustom(t *testing.T) {
 	cases := []struct {
-		name    string
-		cfg     OAuthConfig
-		wantErr bool
+		name            string
+		cfg             OAuthConfig
+		wantErr         bool
+		wantErrContains string // when non-empty, err must also contain this substring
 	}{
-		{"no custom anywhere", OAuthConfig{}, false},
-		{"creds without URLs", OAuthConfig{Web: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}}}, true},
+		{"no custom anywhere", OAuthConfig{}, false, ""},
+		{"creds without URLs", OAuthConfig{Web: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}}}, true, ""},
 		{"creds with URLs", OAuthConfig{
 			Custom: OAuthCustomProviderConfig{AuthorizeURL: "https://a.example/auth", TokenURL: "https://a.example/tok", UserinfoURL: "https://a.example/me"},
 			Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}},
-		}, false},
+		}, false, ""},
 		{"http non-localhost rejected", OAuthConfig{
 			Custom: OAuthCustomProviderConfig{AuthorizeURL: "http://a.example/auth", TokenURL: "https://a.example/tok", UserinfoURL: "https://a.example/me"},
 			Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}},
-		}, true},
+		}, true, ""},
 		{"http localhost allowed", OAuthConfig{
 			Custom: OAuthCustomProviderConfig{AuthorizeURL: "http://localhost:9999/auth", TokenURL: "http://127.0.0.1:9999/tok", UserinfoURL: "http://localhost:9999/me"},
 			Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}},
-		}, false},
+		}, false, ""},
 		{"device creds without device URL", OAuthConfig{
 			Custom: OAuthCustomProviderConfig{AuthorizeURL: "https://a.example/auth", TokenURL: "https://a.example/tok", UserinfoURL: "https://a.example/me"},
 			Device: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}},
-		}, true},
+		}, true, ""},
+		{"non-http(s) scheme on localhost rejected", OAuthConfig{
+			// Regression case for the bug where the scheme check was skipped
+			// entirely on localhost/127.0.0.1 hosts instead of merely being
+			// relaxed to also permit http (in addition to https).
+			Custom: OAuthCustomProviderConfig{AuthorizeURL: "ftp://localhost/auth", TokenURL: "https://a.example/tok", UserinfoURL: "https://a.example/me"},
+			Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}},
+		}, true, "oauth.custom.authorizeUrl"},
+		{"non-http(s) scheme on non-localhost rejected", OAuthConfig{
+			Custom: OAuthCustomProviderConfig{AuthorizeURL: "ftp://a.example/auth", TokenURL: "https://a.example/tok", UserinfoURL: "https://a.example/me"},
+			Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}},
+		}, true, "oauth.custom.authorizeUrl"},
+		{"unparseable URL rejected", OAuthConfig{
+			Custom: OAuthCustomProviderConfig{AuthorizeURL: "://bad", TokenURL: "https://a.example/tok", UserinfoURL: "https://a.example/me"},
+			Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}},
+		}, true, "oauth.custom.authorizeUrl"},
+		{"empty-host URL rejected", OAuthConfig{
+			Custom: OAuthCustomProviderConfig{AuthorizeURL: "not-a-url", TokenURL: "https://a.example/tok", UserinfoURL: "https://a.example/me"},
+			Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}},
+		}, true, "oauth.custom.authorizeUrl"},
+		{"multiple invalid fields report the first in field order", OAuthConfig{
+			// tokenUrl and userinfoUrl are also invalid (missing/http-non-local),
+			// but authorizeUrl comes first in field order, so it must be named —
+			// deterministically, not depending on map iteration order.
+			Custom: OAuthCustomProviderConfig{AuthorizeURL: "", TokenURL: "http://a.example/tok", UserinfoURL: "not-a-url"},
+			Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}},
+		}, true, "oauth.custom.authorizeUrl"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := ValidateOAuthConfig(&tc.cfg)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("ValidateOAuthConfig() err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if tc.wantErrContains != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErrContains)) {
+				t.Fatalf("ValidateOAuthConfig() err = %v, want containing %q", err, tc.wantErrContains)
 			}
 		})
 	}

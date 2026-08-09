@@ -166,33 +166,34 @@ func ValidateOAuthConfig(cfg *OAuthConfig) error {
 	if !credsSet {
 		return nil
 	}
-	required := map[string]string{
-		"oauth.custom.authorizeUrl": cfg.Custom.AuthorizeURL,
-		"oauth.custom.tokenUrl":     cfg.Custom.TokenURL,
-		"oauth.custom.userinfoUrl":  cfg.Custom.UserinfoURL,
+	// Ordered (not map) so that when multiple fields are invalid, the reported
+	// field is deterministic across runs rather than depending on Go's
+	// randomized map iteration order.
+	fields := []struct {
+		key      string
+		val      string
+		required bool
+	}{
+		{"oauth.custom.authorizeUrl", cfg.Custom.AuthorizeURL, true},
+		{"oauth.custom.tokenUrl", cfg.Custom.TokenURL, true},
+		{"oauth.custom.userinfoUrl", cfg.Custom.UserinfoURL, true},
+		{"oauth.custom.deviceAuthorizationUrl", cfg.Custom.DeviceAuthorizationURL, false},
 	}
-	for key, val := range required {
-		if val == "" {
-			return fmt.Errorf("custom OAuth provider: %s is required when custom client credentials are set", key)
-		}
-	}
-	urls := map[string]string{
-		"oauth.custom.authorizeUrl":           cfg.Custom.AuthorizeURL,
-		"oauth.custom.tokenUrl":               cfg.Custom.TokenURL,
-		"oauth.custom.userinfoUrl":            cfg.Custom.UserinfoURL,
-		"oauth.custom.deviceAuthorizationUrl": cfg.Custom.DeviceAuthorizationURL,
-	}
-	for key, raw := range urls {
-		if raw == "" {
+	for _, f := range fields {
+		if f.val == "" {
+			if f.required {
+				return fmt.Errorf("custom OAuth provider: %s is required when custom client credentials are set", f.key)
+			}
 			continue
 		}
-		u, err := url.Parse(raw)
+		u, err := url.Parse(f.val)
 		if err != nil || u.Host == "" {
-			return fmt.Errorf("custom OAuth provider: %s is not a valid URL: %q", key, raw)
+			return fmt.Errorf("custom OAuth provider: %s is not a valid URL: %q", f.key, f.val)
 		}
 		host := u.Hostname()
-		if u.Scheme != "https" && host != "localhost" && host != "127.0.0.1" {
-			return fmt.Errorf("custom OAuth provider: %s must use https (got %q)", key, raw)
+		isLocalHTTP := u.Scheme == "http" && (host == "localhost" || host == "127.0.0.1")
+		if u.Scheme != "https" && !isLocalHTTP {
+			return fmt.Errorf("custom OAuth provider: %s must use https, or http on localhost/127.0.0.1 (got scheme %q in %q)", f.key, u.Scheme, f.val)
 		}
 	}
 	if cfg.Device.Custom.ClientID != "" && cfg.Custom.DeviceAuthorizationURL == "" {

@@ -158,8 +158,24 @@ server:
   #   web:
   #     google: { client_id: "", client_secret: "" }
   #     github: { client_id: "", client_secret: "" }
+  #     custom: { client_id: "", client_secret: "" }
   #   cli:
   #     google: { client_id: "", client_secret: "" }
+  #     custom: { client_id: "", client_secret: "" }
+  #   device:
+  #     custom: { client_id: "", client_secret: "" }
+  #
+  #   # Config-driven custom OAuth 2.0 provider (corporate SSO)
+  #   custom:
+  #     display_name: "Acme SSO"
+  #     authorize_url: "https://sso.acme.com/oauth2/authorize"
+  #     token_url: "https://sso.acme.com/oauth2/token"
+  #     userinfo_url: "https://sso.acme.com/oauth2/userinfo"
+  #     device_authorization_url: ""     # optional; enables device flow when set
+  #     scopes: "openid email profile"
+  #     email_claim: "email"
+  #     name_claim: "name"
+  #     avatar_claim: "picture"
 
   # -------------------------------------------------------------------------
   # Layer 0 — Storage (restart required)

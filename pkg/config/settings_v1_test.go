@@ -1810,6 +1810,53 @@ func TestConvertGlobalToV1ServerConfig_Nil(t *testing.T) {
 	assert.NotNil(t, v1)
 }
 
+func TestV1OAuthCustomRoundTrip(t *testing.T) {
+	data := []byte(`
+schema_version: "1"
+server:
+  oauth:
+    custom:
+      display_name: "Acme SSO"
+      authorize_url: "https://sso.acme.com/authorize"
+      token_url: "https://sso.acme.com/token"
+      userinfo_url: "https://sso.acme.com/userinfo"
+      device_authorization_url: "https://sso.acme.com/device"
+      scopes: "openid email"
+      email_claim: "mail"
+      name_claim: "displayName"
+      avatar_claim: "photo"
+    web:
+      custom:
+        client_id: "web-id"
+        client_secret: "web-sec"
+`)
+
+	// Validate against schema
+	validationErrors, err := ValidateSettings(data, "1")
+	require.NoError(t, err)
+	assert.Empty(t, validationErrors, "custom OAuth config should be valid, got: %v", validationErrors)
+
+	// Unmarshal into struct
+	var vs VersionedSettings
+	require.NoError(t, yaml.Unmarshal(data, &vs))
+
+	gc := ConvertV1ServerToGlobalConfig(vs.Server)
+	if gc.OAuth.Custom.AuthorizeURL != "https://sso.acme.com/authorize" || gc.OAuth.Custom.EmailClaim != "mail" {
+		t.Fatalf("forward conversion lost custom provider fields: %+v", gc.OAuth.Custom)
+	}
+	if gc.OAuth.Web.Custom.ClientID != "web-id" {
+		t.Fatalf("forward conversion lost custom web creds: %+v", gc.OAuth.Web.Custom)
+	}
+
+	v1 := ConvertGlobalToV1ServerConfig(gc)
+	if v1.OAuth.Custom == nil || v1.OAuth.Custom.AuthorizeURL != "https://sso.acme.com/authorize" {
+		t.Fatal("reverse conversion lost custom provider block")
+	}
+	if v1.OAuth.Web.Custom == nil || v1.OAuth.Web.Custom.ClientID != "web-id" {
+		t.Fatal("reverse conversion lost custom web creds")
+	}
+}
+
 func TestLoadGlobalConfig_FromSettingsYAML(t *testing.T) {
 	tmpDir := t.TempDir()
 

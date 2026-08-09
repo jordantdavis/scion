@@ -15,6 +15,10 @@
 package hub
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -580,5 +584,88 @@ func TestValidateOAuthConfigCustom(t *testing.T) {
 				t.Fatalf("ValidateOAuthConfig() err = %v, want containing %q", err, tc.wantErrContains)
 			}
 		})
+	}
+}
+
+func TestCustomAuthorizationURL(t *testing.T) {
+	svc := NewOAuthService(OAuthConfig{
+		Custom: OAuthCustomProviderConfig{
+			AuthorizeURL: "https://sso.acme.com/authorize",
+			TokenURL:     "https://sso.acme.com/token",
+			UserinfoURL:  "https://sso.acme.com/userinfo",
+			Scopes:       "openid email",
+		},
+		Web: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "cid", ClientSecret: "sec"}},
+	})
+	got, err := svc.GetAuthorizationURLForClient(OAuthClientTypeWeb, hubclient.OAuthProviderCustom, "https://hub.example/auth/callback/custom", "state123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(got)
+	q := u.Query()
+	if u.Scheme != "https" || u.Host != "sso.acme.com" || u.Path != "/authorize" {
+		t.Fatalf("base = %s", got)
+	}
+	if q.Get("client_id") != "cid" || q.Get("state") != "state123" || q.Get("response_type") != "code" || q.Get("scope") != "openid email" || q.Get("redirect_uri") != "https://hub.example/auth/callback/custom" {
+		t.Fatalf("params = %v", q)
+	}
+}
+
+func TestCustomExchangeAndUserinfo(t *testing.T) {
+	var gotTokenReq url.Values
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = r.ParseForm()
+			gotTokenReq = r.PostForm
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"at-1","token_type":"Bearer"}`))
+		case "/me":
+			if r.Header.Get("Authorization") != "Bearer at-1" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"sub":"u-9","mail":"jordan@acme.com","displayName":"Jordan","photo":"https://img"}`))
+		}
+	}))
+	defer idp.Close()
+	svc := NewOAuthService(OAuthConfig{
+		Custom: OAuthCustomProviderConfig{
+			AuthorizeURL: idp.URL + "/authorize", TokenURL: idp.URL + "/token", UserinfoURL: idp.URL + "/me",
+			EmailClaim: "mail", NameClaim: "displayName", AvatarClaim: "photo",
+		},
+		Web: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "cid", ClientSecret: "sec"}},
+	})
+	info, err := svc.ExchangeCodeForClient(context.Background(), OAuthClientTypeWeb, hubclient.OAuthProviderCustom, "code-1", "https://hub.example/cb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotTokenReq.Get("grant_type") != "authorization_code" || gotTokenReq.Get("code") != "code-1" || gotTokenReq.Get("client_id") != "cid" {
+		t.Fatalf("token request = %v", gotTokenReq)
+	}
+	if info.ID != "u-9" || info.Email != "jordan@acme.com" || info.DisplayName != "Jordan" || info.AvatarURL != "https://img" || info.Provider != "custom" {
+		t.Fatalf("userinfo = %+v", info)
+	}
+}
+
+func TestCustomUserinfoMissingEmailFails(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"at-1","token_type":"Bearer"}`))
+		case "/me":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"sub":"u-9","name":"NoMail"}`))
+		}
+	}))
+	defer idp.Close()
+	svc := NewOAuthService(OAuthConfig{
+		Custom: OAuthCustomProviderConfig{AuthorizeURL: idp.URL + "/a", TokenURL: idp.URL + "/token", UserinfoURL: idp.URL + "/me"},
+		Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "cid", ClientSecret: "sec"}},
+	})
+	if _, err := svc.ExchangeCodeForClient(context.Background(), OAuthClientTypeWeb, hubclient.OAuthProviderCustom, "code-1", "https://hub.example/cb"); err == nil {
+		t.Fatal("expected error for missing email claim, got nil")
 	}
 }

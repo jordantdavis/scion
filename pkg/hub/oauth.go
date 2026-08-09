@@ -324,6 +324,8 @@ func (s *OAuthService) GetAuthorizationURLForClient(clientType OAuthClientType, 
 		return s.getGoogleAuthURLWithConfig(cfg.Google, callbackURL, state)
 	case hubclient.OAuthProviderGitHub:
 		return s.getGitHubAuthURLWithConfig(cfg.GitHub, callbackURL, state)
+	case hubclient.OAuthProviderCustom:
+		return s.getCustomAuthorizationURL(cfg.Custom, callbackURL, state)
 	default:
 		return "", fmt.Errorf("unsupported OAuth provider: %s", provider)
 	}
@@ -378,6 +380,26 @@ func (s *OAuthService) getGitHubAuthURLWithConfig(cfg OAuthProviderConfig, callb
 	return githubAuthURL + "?" + params.Encode(), nil
 }
 
+// getCustomAuthorizationURL generates a custom-provider OAuth authorization URL.
+// Unlike Google/GitHub, the endpoint and scopes are configuration-driven
+// (s.config.Custom) rather than hardcoded, since this targets arbitrary
+// corporate SSO providers.
+func (s *OAuthService) getCustomAuthorizationURL(cfg OAuthProviderConfig, callbackURL, state string) (string, error) {
+	if cfg.ClientID == "" || !s.config.Custom.IsConfigured() {
+		return "", fmt.Errorf("custom OAuth provider is not configured")
+	}
+
+	params := url.Values{
+		"client_id":     {cfg.ClientID},
+		"redirect_uri":  {callbackURL},
+		"response_type": {"code"},
+		"scope":         {s.config.Custom.EffectiveScopes()},
+		"state":         {state},
+	}
+
+	return s.config.Custom.AuthorizeURL + "?" + params.Encode(), nil
+}
+
 // ExchangeCode exchanges an authorization code for user information.
 // Uses the default (CLI) client configuration for backward compatibility.
 func (s *OAuthService) ExchangeCode(ctx context.Context, provider, code, callbackURL string) (*OAuthUserInfo, error) {
@@ -394,6 +416,8 @@ func (s *OAuthService) ExchangeCodeForClient(ctx context.Context, clientType OAu
 		return s.exchangeGoogleCodeWithConfig(ctx, cfg.Google, code, callbackURL)
 	case "github":
 		return s.exchangeGitHubCodeWithConfig(ctx, cfg.GitHub, code, callbackURL)
+	case hubclient.OAuthProviderCustom:
+		return s.exchangeCustomCodeWithConfig(ctx, cfg.Custom, code, callbackURL)
 	default:
 		return nil, fmt.Errorf("unsupported OAuth provider: %s", provider)
 	}
@@ -450,6 +474,27 @@ func (s *OAuthService) exchangeGitHubCodeWithConfig(ctx context.Context, cfg OAu
 	userInfo, err := s.getGitHubUserInfo(ctx, tokenResp.AccessToken)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GitHub user info: %w", err)
+	}
+
+	return userInfo, nil
+}
+
+// exchangeCustomCodeWithConfig exchanges a custom-provider authorization code for user info.
+func (s *OAuthService) exchangeCustomCodeWithConfig(ctx context.Context, cfg OAuthProviderConfig, code, callbackURL string) (*OAuthUserInfo, error) {
+	if cfg.ClientID == "" || cfg.ClientSecret == "" {
+		return nil, fmt.Errorf("custom OAuth provider is not configured")
+	}
+
+	// Exchange code for access token
+	tokenResp, err := s.exchangeCodeForToken(ctx, s.config.Custom.TokenURL, cfg.ClientID, cfg.ClientSecret, code, callbackURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to exchange custom code: %w", err)
+	}
+
+	// Get user info
+	userInfo, err := s.getCustomUserInfo(ctx, tokenResp.AccessToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get custom user info: %w", err)
 	}
 
 	return userInfo, nil
@@ -701,6 +746,59 @@ func (s *OAuthService) getGitHubPrimaryEmail(ctx context.Context, accessToken st
 	}
 
 	return "", fmt.Errorf("no email found")
+}
+
+// getCustomUserInfo retrieves user information from the configured custom
+// provider's userinfo endpoint, mapping claims per s.config.Custom's
+// configured (or defaulted) claim keys. Per the design spec, identity comes
+// from this endpoint over TLS rather than ID-token/JWKS verification.
+func (s *OAuthService) getCustomUserInfo(ctx context.Context, accessToken string) (*OAuthUserInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", s.config.Custom.UserinfoURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("failed to get user info: %s - %s", resp.Status, string(body))
+	}
+
+	var claims map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&claims); err != nil {
+		return nil, fmt.Errorf("failed to decode user info: %w", err)
+	}
+
+	claim := func(key string) string {
+		v, _ := claims[key].(string)
+		return v
+	}
+
+	emailClaim := s.config.Custom.EffectiveEmailClaim()
+	email := claim(emailClaim)
+	if email == "" {
+		return nil, fmt.Errorf("custom userinfo response missing email claim %q", emailClaim)
+	}
+
+	id := claim("sub")
+	if id == "" {
+		id = email
+	}
+
+	return &OAuthUserInfo{
+		ID:          id,
+		Email:       email,
+		DisplayName: claim(s.config.Custom.EffectiveNameClaim()),
+		AvatarURL:   claim(s.config.Custom.EffectiveAvatarClaim()),
+		Provider:    hubclient.OAuthProviderCustom,
+	}, nil
 }
 
 // DeviceCodeResponse holds the response from a device authorization request.

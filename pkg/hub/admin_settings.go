@@ -572,6 +572,9 @@ func maskOAuthClient(c *config.V1OAuthClientConfig) {
 	if c.GitHub != nil && c.GitHub.ClientSecret != "" {
 		c.GitHub.ClientSecret = "********"
 	}
+	if c.Custom != nil && c.Custom.ClientSecret != "" {
+		c.Custom.ClientSecret = "********"
+	}
 }
 
 // user returns the email or ID string for logging purposes.

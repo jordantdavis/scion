@@ -538,18 +538,35 @@ type V1OAuthConfig struct {
 	Web    *V1OAuthClientConfig `json:"web,omitempty" yaml:"web,omitempty" koanf:"web"`
 	CLI    *V1OAuthClientConfig `json:"cli,omitempty" yaml:"cli,omitempty" koanf:"cli"`
 	Device *V1OAuthClientConfig `json:"device,omitempty" yaml:"device,omitempty" koanf:"device"`
+	// Custom holds provider-level settings for the custom (corporate SSO) OAuth provider.
+	Custom *V1OAuthCustomProviderConfig `json:"custom,omitempty" yaml:"custom,omitempty" koanf:"custom"`
 }
 
 // V1OAuthClientConfig holds OAuth provider settings for a specific client type.
 type V1OAuthClientConfig struct {
 	Google *V1OAuthProviderConfig `json:"google,omitempty" yaml:"google,omitempty" koanf:"google"`
 	GitHub *V1OAuthProviderConfig `json:"github,omitempty" yaml:"github,omitempty" koanf:"github"`
+	Custom *V1OAuthProviderConfig `json:"custom,omitempty" yaml:"custom,omitempty" koanf:"custom"`
 }
 
 // V1OAuthProviderConfig holds OAuth credentials for a single provider.
 type V1OAuthProviderConfig struct {
 	ClientID     string `json:"client_id,omitempty" yaml:"client_id,omitempty" koanf:"client_id"`
 	ClientSecret string `json:"client_secret,omitempty" yaml:"client_secret,omitempty" koanf:"client_secret"`
+}
+
+// V1OAuthCustomProviderConfig holds provider-level settings for the custom
+// (corporate SSO) OAuth provider.
+type V1OAuthCustomProviderConfig struct {
+	DisplayName            string `json:"display_name,omitempty" yaml:"display_name,omitempty" koanf:"display_name"`
+	AuthorizeURL           string `json:"authorize_url,omitempty" yaml:"authorize_url,omitempty" koanf:"authorize_url"`
+	TokenURL               string `json:"token_url,omitempty" yaml:"token_url,omitempty" koanf:"token_url"`
+	UserinfoURL            string `json:"userinfo_url,omitempty" yaml:"userinfo_url,omitempty" koanf:"userinfo_url"`
+	DeviceAuthorizationURL string `json:"device_authorization_url,omitempty" yaml:"device_authorization_url,omitempty" koanf:"device_authorization_url"`
+	Scopes                 string `json:"scopes,omitempty" yaml:"scopes,omitempty" koanf:"scopes"`
+	EmailClaim             string `json:"email_claim,omitempty" yaml:"email_claim,omitempty" koanf:"email_claim"`
+	NameClaim              string `json:"name_claim,omitempty" yaml:"name_claim,omitempty" koanf:"name_claim"`
+	AvatarClaim            string `json:"avatar_claim,omitempty" yaml:"avatar_claim,omitempty" koanf:"avatar_claim"`
 }
 
 // V1StorageConfig holds storage settings.
@@ -1070,6 +1087,13 @@ func versionedEnvKeyMapper(s string) string {
 var knownCompoundFields = []string{
 	"require_trusted_proxy_ip",
 	"soft_delete_retain_files",
+	// device_authorization_url is a leaf field of oauth.custom (see
+	// V1OAuthCustomProviderConfig), but its first word "device" collides with
+	// the oauth.device client-type section name, so without this entry
+	// mapEnvKeyRecursive would misread it as a "device" section nested under
+	// oauth.custom and produce oauth.custom.device.authorization_url instead
+	// of the correct oauth.custom.device_authorization_url.
+	"device_authorization_url",
 	"soft_delete_retention",
 	"stalled_threshold",
 	"authorized_domains",
@@ -1170,7 +1194,7 @@ func mapEnvKeyRecursive(key string) string {
 func isSectionName(name string) bool {
 	switch name {
 	case "hub", "broker", "database", "auth", "oauth", "storage", "secrets", "cors",
-		"web", "cli", "device", "google", "github", "proxy", "iap", "transport",
+		"web", "cli", "device", "google", "github", "custom", "proxy", "iap", "transport",
 		"scheduler":
 		return true
 	}
@@ -1490,6 +1514,10 @@ func ConvertV1ServerToGlobalConfig(v1 *V1ServerConfig) *GlobalConfig {
 				gc.OAuth.Web.GitHub.ClientID = v1.OAuth.Web.GitHub.ClientID
 				gc.OAuth.Web.GitHub.ClientSecret = v1.OAuth.Web.GitHub.ClientSecret
 			}
+			if v1.OAuth.Web.Custom != nil {
+				gc.OAuth.Web.Custom.ClientID = v1.OAuth.Web.Custom.ClientID
+				gc.OAuth.Web.Custom.ClientSecret = v1.OAuth.Web.Custom.ClientSecret
+			}
 		}
 		if v1.OAuth.CLI != nil {
 			if v1.OAuth.CLI.Google != nil {
@@ -1499,6 +1527,10 @@ func ConvertV1ServerToGlobalConfig(v1 *V1ServerConfig) *GlobalConfig {
 			if v1.OAuth.CLI.GitHub != nil {
 				gc.OAuth.CLI.GitHub.ClientID = v1.OAuth.CLI.GitHub.ClientID
 				gc.OAuth.CLI.GitHub.ClientSecret = v1.OAuth.CLI.GitHub.ClientSecret
+			}
+			if v1.OAuth.CLI.Custom != nil {
+				gc.OAuth.CLI.Custom.ClientID = v1.OAuth.CLI.Custom.ClientID
+				gc.OAuth.CLI.Custom.ClientSecret = v1.OAuth.CLI.Custom.ClientSecret
 			}
 		}
 		if v1.OAuth.Device != nil {
@@ -1510,6 +1542,21 @@ func ConvertV1ServerToGlobalConfig(v1 *V1ServerConfig) *GlobalConfig {
 				gc.OAuth.Device.GitHub.ClientID = v1.OAuth.Device.GitHub.ClientID
 				gc.OAuth.Device.GitHub.ClientSecret = v1.OAuth.Device.GitHub.ClientSecret
 			}
+			if v1.OAuth.Device.Custom != nil {
+				gc.OAuth.Device.Custom.ClientID = v1.OAuth.Device.Custom.ClientID
+				gc.OAuth.Device.Custom.ClientSecret = v1.OAuth.Device.Custom.ClientSecret
+			}
+		}
+		if v1.OAuth.Custom != nil {
+			gc.OAuth.Custom.DisplayName = v1.OAuth.Custom.DisplayName
+			gc.OAuth.Custom.AuthorizeURL = v1.OAuth.Custom.AuthorizeURL
+			gc.OAuth.Custom.TokenURL = v1.OAuth.Custom.TokenURL
+			gc.OAuth.Custom.UserinfoURL = v1.OAuth.Custom.UserinfoURL
+			gc.OAuth.Custom.DeviceAuthorizationURL = v1.OAuth.Custom.DeviceAuthorizationURL
+			gc.OAuth.Custom.Scopes = v1.OAuth.Custom.Scopes
+			gc.OAuth.Custom.EmailClaim = v1.OAuth.Custom.EmailClaim
+			gc.OAuth.Custom.NameClaim = v1.OAuth.Custom.NameClaim
+			gc.OAuth.Custom.AvatarClaim = v1.OAuth.Custom.AvatarClaim
 		}
 	}
 
@@ -1689,6 +1736,28 @@ func ConvertGlobalToV1ServerConfig(gc *GlobalConfig) *V1ServerConfig {
 			Google: &V1OAuthProviderConfig{ClientID: gc.OAuth.Device.Google.ClientID, ClientSecret: gc.OAuth.Device.Google.ClientSecret},
 			GitHub: &V1OAuthProviderConfig{ClientID: gc.OAuth.Device.GitHub.ClientID, ClientSecret: gc.OAuth.Device.GitHub.ClientSecret},
 		},
+	}
+	if gc.OAuth.Web.Custom != (OAuthProviderConfig{}) {
+		v1.OAuth.Web.Custom = &V1OAuthProviderConfig{ClientID: gc.OAuth.Web.Custom.ClientID, ClientSecret: gc.OAuth.Web.Custom.ClientSecret}
+	}
+	if gc.OAuth.CLI.Custom != (OAuthProviderConfig{}) {
+		v1.OAuth.CLI.Custom = &V1OAuthProviderConfig{ClientID: gc.OAuth.CLI.Custom.ClientID, ClientSecret: gc.OAuth.CLI.Custom.ClientSecret}
+	}
+	if gc.OAuth.Device.Custom != (OAuthProviderConfig{}) {
+		v1.OAuth.Device.Custom = &V1OAuthProviderConfig{ClientID: gc.OAuth.Device.Custom.ClientID, ClientSecret: gc.OAuth.Device.Custom.ClientSecret}
+	}
+	if gc.OAuth.Custom != (OAuthCustomProviderConfig{}) {
+		v1.OAuth.Custom = &V1OAuthCustomProviderConfig{
+			DisplayName:            gc.OAuth.Custom.DisplayName,
+			AuthorizeURL:           gc.OAuth.Custom.AuthorizeURL,
+			TokenURL:               gc.OAuth.Custom.TokenURL,
+			UserinfoURL:            gc.OAuth.Custom.UserinfoURL,
+			DeviceAuthorizationURL: gc.OAuth.Custom.DeviceAuthorizationURL,
+			Scopes:                 gc.OAuth.Custom.Scopes,
+			EmailClaim:             gc.OAuth.Custom.EmailClaim,
+			NameClaim:              gc.OAuth.Custom.NameClaim,
+			AvatarClaim:            gc.OAuth.Custom.AvatarClaim,
+		}
 	}
 
 	// Storage config

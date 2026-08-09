@@ -15,8 +15,14 @@
 package hub
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/GoogleCloudPlatform/scion/pkg/hubclient"
 )
 
 func TestOAuthConfig_IsConfigured(t *testing.T) {
@@ -479,5 +485,388 @@ func TestOAuthService_IsProviderConfiguredForClient(t *testing.T) {
 				t.Errorf("IsProviderConfiguredForClient(%s, %s) = %v, want %v", tc.clientType, tc.provider, got, tc.expected)
 			}
 		})
+	}
+}
+
+// TestOAuthService_IsProviderConfiguredForClient_CustomBothHalvesRequired
+// pins the AND in the custom-provider branch of IsProviderConfiguredForClient
+// (oauth.go): the custom provider is only "configured" when BOTH per-client
+// credentials AND the provider-level endpoint URLs (OAuthConfig.Custom) are
+// set. Without this coverage, collapsing the AND back to a plain
+// cfg.IsProviderConfigured(provider) check would pass the rest of the suite
+// silently, since every other custom-provider test configures both halves.
+func TestOAuthService_IsProviderConfiguredForClient_CustomBothHalvesRequired(t *testing.T) {
+	t.Run("credentials without endpoint URLs", func(t *testing.T) {
+		svc := NewOAuthService(OAuthConfig{
+			CLI: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "id", ClientSecret: "sec"}},
+			// Custom (provider-level endpoint URLs) intentionally left empty.
+		})
+		if svc.IsProviderConfiguredForClient(OAuthClientTypeCLI, hubclient.OAuthProviderCustom) {
+			t.Fatal("expected false: credentials set but endpoint URLs are not")
+		}
+	})
+
+	t.Run("endpoint URLs without credentials", func(t *testing.T) {
+		svc := NewOAuthService(OAuthConfig{
+			Custom: OAuthCustomProviderConfig{
+				AuthorizeURL: "https://sso.acme.com/a", TokenURL: "https://sso.acme.com/t", UserinfoURL: "https://sso.acme.com/u",
+			},
+			// Device.Custom credentials intentionally left empty.
+		})
+		if svc.IsProviderConfiguredForClient(OAuthClientTypeDevice, hubclient.OAuthProviderCustom) {
+			t.Fatal("expected false: endpoint URLs set but credentials are not")
+		}
+	})
+
+	t.Run("both set", func(t *testing.T) {
+		svc := NewOAuthService(OAuthConfig{
+			Custom: OAuthCustomProviderConfig{
+				AuthorizeURL: "https://sso.acme.com/a", TokenURL: "https://sso.acme.com/t", UserinfoURL: "https://sso.acme.com/u",
+			},
+			Web: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "id", ClientSecret: "sec"}},
+		})
+		if !svc.IsProviderConfiguredForClient(OAuthClientTypeWeb, hubclient.OAuthProviderCustom) {
+			t.Fatal("expected true: both credentials and endpoint URLs are set")
+		}
+	})
+}
+
+func TestCustomProviderConfigDefaults(t *testing.T) {
+	c := &OAuthCustomProviderConfig{}
+	if c.IsConfigured() {
+		t.Fatal("empty custom config reported configured")
+	}
+	if got := c.EffectiveDisplayName(); got != "SSO" {
+		t.Fatalf("EffectiveDisplayName = %q, want SSO", got)
+	}
+	if got := c.EffectiveScopes(); got != "openid email profile" {
+		t.Fatalf("EffectiveScopes = %q", got)
+	}
+	if c.EffectiveEmailClaim() != "email" || c.EffectiveNameClaim() != "name" || c.EffectiveAvatarClaim() != "picture" {
+		t.Fatal("claim defaults wrong")
+	}
+	c.DisplayName, c.EmailClaim = "Acme SSO", "mail"
+	c.AuthorizeURL, c.TokenURL, c.UserinfoURL = "https://a", "https://t", "https://u"
+	if !c.IsConfigured() || c.EffectiveDisplayName() != "Acme SSO" || c.EffectiveEmailClaim() != "mail" {
+		t.Fatal("overrides not honored")
+	}
+}
+
+func TestClientConfigCustomArm(t *testing.T) {
+	cc := &OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "id", ClientSecret: "sec"}}
+	if !cc.IsConfigured() {
+		t.Fatal("custom-only client config reported unconfigured")
+	}
+	if !cc.IsProviderConfigured(hubclient.OAuthProviderCustom) {
+		t.Fatal("IsProviderConfigured(custom) = false")
+	}
+	if got := cc.GetProvider(hubclient.OAuthProviderCustom); got.ClientID != "id" {
+		t.Fatalf("GetProvider(custom).ClientID = %q", got.ClientID)
+	}
+}
+
+func TestValidateOAuthConfigCustom(t *testing.T) {
+	cases := []struct {
+		name            string
+		cfg             OAuthConfig
+		wantErr         bool
+		wantErrContains string // when non-empty, err must also contain this substring
+	}{
+		{"no custom anywhere", OAuthConfig{}, false, ""},
+		{"creds without URLs", OAuthConfig{Web: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}}}, true, ""},
+		{"creds with URLs", OAuthConfig{
+			Custom: OAuthCustomProviderConfig{AuthorizeURL: "https://a.example/auth", TokenURL: "https://a.example/tok", UserinfoURL: "https://a.example/me"},
+			Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}},
+		}, false, ""},
+		{"http non-localhost rejected", OAuthConfig{
+			Custom: OAuthCustomProviderConfig{AuthorizeURL: "http://a.example/auth", TokenURL: "https://a.example/tok", UserinfoURL: "https://a.example/me"},
+			Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}},
+		}, true, ""},
+		{"http localhost allowed", OAuthConfig{
+			Custom: OAuthCustomProviderConfig{AuthorizeURL: "http://localhost:9999/auth", TokenURL: "http://127.0.0.1:9999/tok", UserinfoURL: "http://localhost:9999/me"},
+			Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}},
+		}, false, ""},
+		{"device creds without device URL", OAuthConfig{
+			Custom: OAuthCustomProviderConfig{AuthorizeURL: "https://a.example/auth", TokenURL: "https://a.example/tok", UserinfoURL: "https://a.example/me"},
+			Device: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}},
+		}, true, ""},
+		{"non-http(s) scheme on localhost rejected", OAuthConfig{
+			// Regression case for the bug where the scheme check was skipped
+			// entirely on localhost/127.0.0.1 hosts instead of merely being
+			// relaxed to also permit http (in addition to https).
+			Custom: OAuthCustomProviderConfig{AuthorizeURL: "ftp://localhost/auth", TokenURL: "https://a.example/tok", UserinfoURL: "https://a.example/me"},
+			Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}},
+		}, true, "oauth.custom.authorizeUrl"},
+		{"non-http(s) scheme on non-localhost rejected", OAuthConfig{
+			Custom: OAuthCustomProviderConfig{AuthorizeURL: "ftp://a.example/auth", TokenURL: "https://a.example/tok", UserinfoURL: "https://a.example/me"},
+			Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}},
+		}, true, "oauth.custom.authorizeUrl"},
+		{"unparseable URL rejected", OAuthConfig{
+			Custom: OAuthCustomProviderConfig{AuthorizeURL: "://bad", TokenURL: "https://a.example/tok", UserinfoURL: "https://a.example/me"},
+			Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}},
+		}, true, "oauth.custom.authorizeUrl"},
+		{"empty-host URL rejected", OAuthConfig{
+			Custom: OAuthCustomProviderConfig{AuthorizeURL: "not-a-url", TokenURL: "https://a.example/tok", UserinfoURL: "https://a.example/me"},
+			Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}},
+		}, true, "oauth.custom.authorizeUrl"},
+		{"multiple invalid fields report the first in field order", OAuthConfig{
+			// tokenUrl and userinfoUrl are also invalid (missing/http-non-local),
+			// but authorizeUrl comes first in field order, so it must be named —
+			// deterministically, not depending on map iteration order.
+			Custom: OAuthCustomProviderConfig{AuthorizeURL: "", TokenURL: "http://a.example/tok", UserinfoURL: "not-a-url"},
+			Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "x", ClientSecret: "y"}},
+		}, true, "oauth.custom.authorizeUrl"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateOAuthConfig(&tc.cfg)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ValidateOAuthConfig() err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if tc.wantErrContains != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErrContains)) {
+				t.Fatalf("ValidateOAuthConfig() err = %v, want containing %q", err, tc.wantErrContains)
+			}
+		})
+	}
+}
+
+func TestCustomAuthorizationURL(t *testing.T) {
+	svc := NewOAuthService(OAuthConfig{
+		Custom: OAuthCustomProviderConfig{
+			AuthorizeURL: "https://sso.acme.com/authorize",
+			TokenURL:     "https://sso.acme.com/token",
+			UserinfoURL:  "https://sso.acme.com/userinfo",
+			Scopes:       "openid email",
+		},
+		Web: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "cid", ClientSecret: "sec"}},
+	})
+	got, err := svc.GetAuthorizationURLForClient(OAuthClientTypeWeb, hubclient.OAuthProviderCustom, "https://hub.example/auth/callback/custom", "state123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(got)
+	q := u.Query()
+	if u.Scheme != "https" || u.Host != "sso.acme.com" || u.Path != "/authorize" {
+		t.Fatalf("base = %s", got)
+	}
+	if q.Get("client_id") != "cid" || q.Get("state") != "state123" || q.Get("response_type") != "code" || q.Get("scope") != "openid email" || q.Get("redirect_uri") != "https://hub.example/auth/callback/custom" {
+		t.Fatalf("params = %v", q)
+	}
+}
+
+func TestCustomAuthorizationURLPreservesExistingQuery(t *testing.T) {
+	// Azure AD B2C-style authorize URLs carry a tenant policy parameter
+	// (?p=B2C_1_signin) that must survive alongside the standard OAuth params.
+	svc := NewOAuthService(OAuthConfig{
+		Custom: OAuthCustomProviderConfig{
+			AuthorizeURL: "https://tenant.b2clogin.com/tenant/oauth2/v2.0/authorize?p=B2C_1_signin",
+			TokenURL:     "https://tenant.b2clogin.com/tenant/oauth2/v2.0/token",
+			UserinfoURL:  "https://tenant.b2clogin.com/tenant/openid/userinfo",
+		},
+		Web: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "cid", ClientSecret: "sec"}},
+	})
+	got, err := svc.GetAuthorizationURLForClient(OAuthClientTypeWeb, hubclient.OAuthProviderCustom, "https://hub.example/cb", "state123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("result is not a valid URL: %v (%s)", err, got)
+	}
+	q := u.Query()
+	if q.Get("p") != "B2C_1_signin" {
+		t.Fatalf("pre-existing query param %q dropped: %s", "p", got)
+	}
+	if q.Get("client_id") != "cid" || q.Get("redirect_uri") != "https://hub.example/cb" || q.Get("response_type") != "code" || q.Get("scope") != "openid email profile" || q.Get("state") != "state123" {
+		t.Fatalf("params = %v", q)
+	}
+}
+
+func TestCustomExchangeAndUserinfo(t *testing.T) {
+	var gotTokenReq url.Values
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			// GitHub-style endpoints only return JSON when asked; pin that
+			// exchangeCodeForToken sends Accept: application/json.
+			if r.Header.Get("Accept") != "application/json" {
+				w.WriteHeader(http.StatusNotAcceptable)
+				return
+			}
+			_ = r.ParseForm()
+			gotTokenReq = r.PostForm
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"at-1","token_type":"Bearer"}`))
+		case "/me":
+			if r.Header.Get("Authorization") != "Bearer at-1" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"sub":"u-9","mail":"jordan@acme.com","displayName":"Jordan","photo":"https://img"}`))
+		}
+	}))
+	defer idp.Close()
+	svc := NewOAuthService(OAuthConfig{
+		Custom: OAuthCustomProviderConfig{
+			AuthorizeURL: idp.URL + "/authorize", TokenURL: idp.URL + "/token", UserinfoURL: idp.URL + "/me",
+			EmailClaim: "mail", NameClaim: "displayName", AvatarClaim: "photo",
+		},
+		Web: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "cid", ClientSecret: "sec"}},
+	})
+	info, err := svc.ExchangeCodeForClient(context.Background(), OAuthClientTypeWeb, hubclient.OAuthProviderCustom, "code-1", "https://hub.example/cb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotTokenReq.Get("grant_type") != "authorization_code" || gotTokenReq.Get("code") != "code-1" ||
+		gotTokenReq.Get("client_id") != "cid" || gotTokenReq.Get("client_secret") != "sec" ||
+		gotTokenReq.Get("redirect_uri") != "https://hub.example/cb" {
+		t.Fatalf("token request = %v", gotTokenReq)
+	}
+	if info.ID != "u-9" || info.Email != "jordan@acme.com" || info.DisplayName != "Jordan" || info.AvatarURL != "https://img" || info.Provider != "custom" {
+		t.Fatalf("userinfo = %+v", info)
+	}
+}
+
+func TestCustomUserinfoMissingEmailFails(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"at-1","token_type":"Bearer"}`))
+		case "/me":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"sub":"u-9","name":"NoMail"}`))
+		}
+	}))
+	defer idp.Close()
+	svc := NewOAuthService(OAuthConfig{
+		Custom: OAuthCustomProviderConfig{AuthorizeURL: idp.URL + "/a", TokenURL: idp.URL + "/token", UserinfoURL: idp.URL + "/me"},
+		Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "cid", ClientSecret: "sec"}},
+	})
+	_, err := svc.ExchangeCodeForClient(context.Background(), OAuthClientTypeWeb, hubclient.OAuthProviderCustom, "code-1", "https://hub.example/cb")
+	if err == nil {
+		t.Fatal("expected error for missing email claim, got nil")
+	}
+	if !strings.Contains(err.Error(), "email") {
+		t.Fatalf("error should name the configured email claim key %q, got: %v", "email", err)
+	}
+}
+
+func TestCustomExchangeEmptyAccessTokenFails(t *testing.T) {
+	userinfoCalled := false
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token_type":"Bearer"}`)) // no access_token
+		case "/me":
+			userinfoCalled = true
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"sub":"u-9","email":"jordan@acme.com"}`))
+		}
+	}))
+	defer idp.Close()
+	svc := NewOAuthService(OAuthConfig{
+		Custom: OAuthCustomProviderConfig{AuthorizeURL: idp.URL + "/a", TokenURL: idp.URL + "/token", UserinfoURL: idp.URL + "/me"},
+		Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "cid", ClientSecret: "sec"}},
+	})
+	if _, err := svc.ExchangeCodeForClient(context.Background(), OAuthClientTypeWeb, hubclient.OAuthProviderCustom, "code-1", "https://hub.example/cb"); err == nil {
+		t.Fatal("expected error for empty access_token, got nil")
+	}
+	if userinfoCalled {
+		t.Fatal("userinfo endpoint must not be called when the token endpoint returns no access_token")
+	}
+}
+
+func TestCustomDeviceFlowUnconfigured(t *testing.T) {
+	// DeviceAuthorizationURL is unset: the custom provider must refuse device
+	// flow at runtime even though Task 3's ValidateOAuthConfig would already
+	// have rejected this combination at server start — defence in depth.
+	svc := NewOAuthService(OAuthConfig{
+		Custom: OAuthCustomProviderConfig{AuthorizeURL: "https://a/x", TokenURL: "https://a/t", UserinfoURL: "https://a/u"},
+		Device: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "cid"}},
+	})
+	_, err := svc.RequestDeviceCode(context.Background(), OAuthClientTypeDevice, hubclient.OAuthProviderCustom)
+	if err == nil || !strings.Contains(err.Error(), "does not support device-flow") {
+		t.Fatalf("err = %v, want does-not-support error", err)
+	}
+}
+
+func TestCustomDeviceFlow(t *testing.T) {
+	polls := 0
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/device":
+			_, _ = w.Write([]byte(`{"device_code":"dc-1","user_code":"ABCD-1234","verification_uri":"https://sso.acme.com/activate","expires_in":900,"interval":1}`))
+		case "/token":
+			polls++
+			switch polls {
+			case 1:
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
+			case 2:
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"slow_down"}`))
+			default:
+				_, _ = w.Write([]byte(`{"access_token":"at-dev","token_type":"Bearer"}`))
+			}
+		}
+	}))
+	defer idp.Close()
+	svc := NewOAuthService(OAuthConfig{
+		Custom: OAuthCustomProviderConfig{
+			AuthorizeURL: idp.URL + "/a", TokenURL: idp.URL + "/token", UserinfoURL: idp.URL + "/u",
+			DeviceAuthorizationURL: idp.URL + "/device",
+		},
+		Device: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "cid", ClientSecret: "sec"}},
+	})
+
+	dc, err := svc.RequestDeviceCode(context.Background(), OAuthClientTypeDevice, hubclient.OAuthProviderCustom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dc.UserCode != "ABCD-1234" || dc.VerificationURI == "" {
+		t.Fatalf("device code response = %+v", dc)
+	}
+
+	// First poll: authorization_pending maps to the codebase's existing
+	// pending signal, *DeviceAuthError (see pollGoogleDeviceToken /
+	// pollGitHubDeviceToken), with a nil token.
+	tok1, err1 := svc.PollDeviceToken(context.Background(), OAuthClientTypeDevice, hubclient.OAuthProviderCustom, "dc-1")
+	authErr1, ok := err1.(*DeviceAuthError)
+	if !ok || authErr1.Code != "authorization_pending" || tok1 != nil {
+		t.Fatalf("first poll: tok=%v err=%v, want *DeviceAuthError{Code: authorization_pending}", tok1, err1)
+	}
+
+	// Second poll: slow_down uses the same pending-signal convention.
+	tok2, err2 := svc.PollDeviceToken(context.Background(), OAuthClientTypeDevice, hubclient.OAuthProviderCustom, "dc-1")
+	authErr2, ok := err2.(*DeviceAuthError)
+	if !ok || authErr2.Code != "slow_down" || tok2 != nil {
+		t.Fatalf("second poll: tok=%v err=%v, want *DeviceAuthError{Code: slow_down}", tok2, err2)
+	}
+
+	// Third poll: success.
+	tok3, err3 := svc.PollDeviceToken(context.Background(), OAuthClientTypeDevice, hubclient.OAuthProviderCustom, "dc-1")
+	if err3 != nil || tok3 == nil || tok3.AccessToken != "at-dev" {
+		t.Fatalf("third poll: tok=%+v err=%v", tok3, err3)
+	}
+}
+
+func TestCustomTokenEndpointErrorFails(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("internal error"))
+		}
+	}))
+	defer idp.Close()
+	svc := NewOAuthService(OAuthConfig{
+		Custom: OAuthCustomProviderConfig{AuthorizeURL: idp.URL + "/a", TokenURL: idp.URL + "/token", UserinfoURL: idp.URL + "/me"},
+		Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "cid", ClientSecret: "sec"}},
+	})
+	if _, err := svc.ExchangeCodeForClient(context.Background(), OAuthClientTypeWeb, hubclient.OAuthProviderCustom, "code-1", "https://hub.example/cb"); err == nil {
+		t.Fatal("expected error for non-2xx token endpoint response, got nil")
 	}
 }

@@ -1429,6 +1429,10 @@ func initHubServer(ctx context.Context, cfg *config.GlobalConfig, s store.Store,
 					ClientID:     cfg.OAuth.Web.GitHub.ClientID,
 					ClientSecret: cfg.OAuth.Web.GitHub.ClientSecret,
 				},
+				Custom: hub.OAuthProviderConfig{
+					ClientID:     cfg.OAuth.Web.Custom.ClientID,
+					ClientSecret: cfg.OAuth.Web.Custom.ClientSecret,
+				},
 			},
 			CLI: hub.OAuthClientConfig{
 				Google: hub.OAuthProviderConfig{
@@ -1438,6 +1442,10 @@ func initHubServer(ctx context.Context, cfg *config.GlobalConfig, s store.Store,
 				GitHub: hub.OAuthProviderConfig{
 					ClientID:     cfg.OAuth.CLI.GitHub.ClientID,
 					ClientSecret: cfg.OAuth.CLI.GitHub.ClientSecret,
+				},
+				Custom: hub.OAuthProviderConfig{
+					ClientID:     cfg.OAuth.CLI.Custom.ClientID,
+					ClientSecret: cfg.OAuth.CLI.Custom.ClientSecret,
 				},
 			},
 			Device: hub.OAuthClientConfig{
@@ -1449,6 +1457,21 @@ func initHubServer(ctx context.Context, cfg *config.GlobalConfig, s store.Store,
 					ClientID:     cfg.OAuth.Device.GitHub.ClientID,
 					ClientSecret: cfg.OAuth.Device.GitHub.ClientSecret,
 				},
+				Custom: hub.OAuthProviderConfig{
+					ClientID:     cfg.OAuth.Device.Custom.ClientID,
+					ClientSecret: cfg.OAuth.Device.Custom.ClientSecret,
+				},
+			},
+			Custom: hub.OAuthCustomProviderConfig{
+				DisplayName:            cfg.OAuth.Custom.DisplayName,
+				AuthorizeURL:           cfg.OAuth.Custom.AuthorizeURL,
+				TokenURL:               cfg.OAuth.Custom.TokenURL,
+				UserinfoURL:            cfg.OAuth.Custom.UserinfoURL,
+				DeviceAuthorizationURL: cfg.OAuth.Custom.DeviceAuthorizationURL,
+				Scopes:                 cfg.OAuth.Custom.Scopes,
+				EmailClaim:             cfg.OAuth.Custom.EmailClaim,
+				NameClaim:              cfg.OAuth.Custom.NameClaim,
+				AvatarClaim:            cfg.OAuth.Custom.AvatarClaim,
 			},
 		},
 		MaintenanceConfig: resolveMaintenanceConfig(cfg),
@@ -1467,6 +1490,10 @@ func initHubServer(ctx context.Context, cfg *config.GlobalConfig, s store.Store,
 		// session secret or pre-provision the signing keys.
 		RequireStableSigningKey: os.Getenv("SCION_REQUIRE_STABLE_SIGNING_KEY") == "true",
 		OIDCConfig:              cfg.OIDC,
+	}
+
+	if err := hub.ValidateOAuthConfig(&hubCfg.OAuthConfig); err != nil {
+		return nil, fmt.Errorf("invalid OAuth configuration: %w", err)
 	}
 
 	// In hosted mode every replica must share the same session secret for

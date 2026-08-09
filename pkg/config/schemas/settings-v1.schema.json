@@ -914,14 +914,16 @@
       "properties": {
         "web": { "$ref": "#/$defs/oauthClientConfig" },
         "cli": { "$ref": "#/$defs/oauthClientConfig" },
-        "device": { "$ref": "#/$defs/oauthClientConfig" }
+        "device": { "$ref": "#/$defs/oauthClientConfig" },
+        "custom": { "$ref": "#/$defs/oauthCustomProviderConfig" }
       }
     },
     "oauthClientConfig": {
       "type": "object",
       "properties": {
         "google": { "$ref": "#/$defs/oauthProviderConfig" },
-        "github": { "$ref": "#/$defs/oauthProviderConfig" }
+        "github": { "$ref": "#/$defs/oauthProviderConfig" },
+        "custom": { "$ref": "#/$defs/oauthProviderConfig" }
       }
     },
     "oauthProviderConfig": {
@@ -929,6 +931,21 @@
       "properties": {
         "client_id": { "type": "string" },
         "client_secret": { "type": "string", "x-sensitive": true }
+      }
+    },
+    "oauthCustomProviderConfig": {
+      "type": "object",
+      "description": "Provider-level settings for the config-driven custom OAuth provider (corporate SSO).",
+      "properties": {
+        "display_name": { "type": "string" },
+        "authorize_url": { "type": "string" },
+        "token_url": { "type": "string" },
+        "userinfo_url": { "type": "string" },
+        "device_authorization_url": { "type": "string" },
+        "scopes": { "type": "string" },
+        "email_claim": { "type": "string" },
+        "name_claim": { "type": "string" },
+        "avatar_claim": { "type": "string" }
       }
     },
     "serverStorage": {

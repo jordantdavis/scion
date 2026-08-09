@@ -111,14 +111,20 @@ func logOAuthDebug(cfg *config.GlobalConfig) {
 		"cli_google_client_secret", redactForDebug(cfg.OAuth.CLI.Google.ClientSecret),
 		"cli_github_client_id", redactForDebug(cfg.OAuth.CLI.GitHub.ClientID),
 		"cli_github_client_secret", redactForDebug(cfg.OAuth.CLI.GitHub.ClientSecret),
+		"cli_custom_client_id", redactForDebug(cfg.OAuth.CLI.Custom.ClientID),
+		"cli_custom_client_secret", redactForDebug(cfg.OAuth.CLI.Custom.ClientSecret),
 		"web_google_client_id", redactForDebug(cfg.OAuth.Web.Google.ClientID),
 		"web_google_client_secret", redactForDebug(cfg.OAuth.Web.Google.ClientSecret),
 		"web_github_client_id", redactForDebug(cfg.OAuth.Web.GitHub.ClientID),
 		"web_github_client_secret", redactForDebug(cfg.OAuth.Web.GitHub.ClientSecret),
+		"web_custom_client_id", redactForDebug(cfg.OAuth.Web.Custom.ClientID),
+		"web_custom_client_secret", redactForDebug(cfg.OAuth.Web.Custom.ClientSecret),
 		"device_google_client_id", redactForDebug(cfg.OAuth.Device.Google.ClientID),
 		"device_google_client_secret", redactForDebug(cfg.OAuth.Device.Google.ClientSecret),
 		"device_github_client_id", redactForDebug(cfg.OAuth.Device.GitHub.ClientID),
 		"device_github_client_secret", redactForDebug(cfg.OAuth.Device.GitHub.ClientSecret),
+		"device_custom_client_id", redactForDebug(cfg.OAuth.Device.Custom.ClientID),
+		"device_custom_client_secret", redactForDebug(cfg.OAuth.Device.Custom.ClientSecret),
 	)
 }
 

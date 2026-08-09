@@ -37,11 +37,12 @@ type OAuthProviderConfig struct {
 type OAuthClientConfig struct {
 	Google OAuthProviderConfig
 	GitHub OAuthProviderConfig
+	Custom OAuthProviderConfig
 }
 
 // IsConfigured returns true if at least one OAuth provider is configured.
 func (c *OAuthClientConfig) IsConfigured() bool {
-	return c.Google.ClientID != "" || c.GitHub.ClientID != ""
+	return c.Google.ClientID != "" || c.GitHub.ClientID != "" || c.Custom.ClientID != ""
 }
 
 // IsProviderConfigured returns true if the specified provider is configured.
@@ -51,6 +52,8 @@ func (c *OAuthClientConfig) IsProviderConfigured(provider string) bool {
 		return c.Google.ClientID != "" && c.Google.ClientSecret != ""
 	case hubclient.OAuthProviderGitHub:
 		return c.GitHub.ClientID != "" && c.GitHub.ClientSecret != ""
+	case hubclient.OAuthProviderCustom:
+		return c.Custom.ClientID != "" && c.Custom.ClientSecret != ""
 	default:
 		return false
 	}
@@ -63,9 +66,73 @@ func (c *OAuthClientConfig) GetProvider(provider string) OAuthProviderConfig {
 		return c.Google
 	case hubclient.OAuthProviderGitHub:
 		return c.GitHub
+	case hubclient.OAuthProviderCustom:
+		return c.Custom
 	default:
 		return OAuthProviderConfig{}
 	}
+}
+
+// OAuthCustomProviderConfig holds provider-level settings for the custom OAuth
+// provider (mirrors the pkg/config version). Unlike Google/GitHub, the custom
+// provider's endpoints, scopes, and claim mapping are configuration-driven
+// rather than hardcoded, since it targets arbitrary corporate SSO providers.
+type OAuthCustomProviderConfig struct {
+	DisplayName            string
+	AuthorizeURL           string
+	TokenURL               string
+	UserinfoURL            string
+	DeviceAuthorizationURL string
+	Scopes                 string
+	EmailClaim             string
+	NameClaim              string
+	AvatarClaim            string
+}
+
+// IsConfigured returns true if the required endpoint URLs are set. Credential
+// presence (client ID/secret) is tracked separately via OAuthClientConfig.
+func (c *OAuthCustomProviderConfig) IsConfigured() bool {
+	return c.AuthorizeURL != "" && c.TokenURL != "" && c.UserinfoURL != ""
+}
+
+// EffectiveDisplayName returns DisplayName, defaulting to "SSO" if unset.
+func (c *OAuthCustomProviderConfig) EffectiveDisplayName() string {
+	if c.DisplayName == "" {
+		return "SSO"
+	}
+	return c.DisplayName
+}
+
+// EffectiveScopes returns Scopes, defaulting to "openid email profile" if unset.
+func (c *OAuthCustomProviderConfig) EffectiveScopes() string {
+	if c.Scopes == "" {
+		return "openid email profile"
+	}
+	return c.Scopes
+}
+
+// EffectiveEmailClaim returns EmailClaim, defaulting to "email" if unset.
+func (c *OAuthCustomProviderConfig) EffectiveEmailClaim() string {
+	if c.EmailClaim == "" {
+		return "email"
+	}
+	return c.EmailClaim
+}
+
+// EffectiveNameClaim returns NameClaim, defaulting to "name" if unset.
+func (c *OAuthCustomProviderConfig) EffectiveNameClaim() string {
+	if c.NameClaim == "" {
+		return "name"
+	}
+	return c.NameClaim
+}
+
+// EffectiveAvatarClaim returns AvatarClaim, defaulting to "picture" if unset.
+func (c *OAuthCustomProviderConfig) EffectiveAvatarClaim() string {
+	if c.AvatarClaim == "" {
+		return "picture"
+	}
+	return c.AvatarClaim
 }
 
 // OAuthConfig holds configuration for all OAuth providers.
@@ -77,6 +144,8 @@ type OAuthConfig struct {
 	CLI OAuthClientConfig
 	// Device OAuth client settings (for device authorization grant / headless flows).
 	Device OAuthClientConfig
+	// Custom provider-level settings (endpoint URLs, scopes, claim mapping).
+	Custom OAuthCustomProviderConfig
 }
 
 // IsConfigured returns true if at least one OAuth provider is configured.
@@ -88,6 +157,49 @@ func (c *OAuthConfig) IsConfigured() bool {
 // for at least one client type.
 func (c *OAuthConfig) IsProviderConfigured(provider string) bool {
 	return c.Web.IsProviderConfigured(provider) || c.CLI.IsProviderConfigured(provider) || c.Device.IsProviderConfigured(provider)
+}
+
+// ValidateOAuthConfig checks custom-provider invariants at server start so a
+// misconfigured corporate SSO fails fast instead of at login time.
+func ValidateOAuthConfig(cfg *OAuthConfig) error {
+	credsSet := cfg.Web.Custom.ClientID != "" || cfg.CLI.Custom.ClientID != "" || cfg.Device.Custom.ClientID != ""
+	if !credsSet {
+		return nil
+	}
+	// Ordered (not map) so that when multiple fields are invalid, the reported
+	// field is deterministic across runs rather than depending on Go's
+	// randomized map iteration order.
+	fields := []struct {
+		key      string
+		val      string
+		required bool
+	}{
+		{"oauth.custom.authorizeUrl", cfg.Custom.AuthorizeURL, true},
+		{"oauth.custom.tokenUrl", cfg.Custom.TokenURL, true},
+		{"oauth.custom.userinfoUrl", cfg.Custom.UserinfoURL, true},
+		{"oauth.custom.deviceAuthorizationUrl", cfg.Custom.DeviceAuthorizationURL, false},
+	}
+	for _, f := range fields {
+		if f.val == "" {
+			if f.required {
+				return fmt.Errorf("custom OAuth provider: %s is required when custom client credentials are set", f.key)
+			}
+			continue
+		}
+		u, err := url.Parse(f.val)
+		if err != nil || u.Host == "" {
+			return fmt.Errorf("custom OAuth provider: %s is not a valid URL: %q", f.key, f.val)
+		}
+		host := u.Hostname()
+		isLocalHTTP := u.Scheme == "http" && (host == "localhost" || host == "127.0.0.1")
+		if u.Scheme != "https" && !isLocalHTTP {
+			return fmt.Errorf("custom OAuth provider: %s must use https, or http on localhost/127.0.0.1 (got scheme %q in %q)", f.key, u.Scheme, f.val)
+		}
+	}
+	if cfg.Device.Custom.ClientID != "" && cfg.Custom.DeviceAuthorizationURL == "" {
+		return fmt.Errorf("custom OAuth provider: oauth.device.custom credentials set but oauth.custom.deviceAuthorizationUrl is empty")
+	}
+	return nil
 }
 
 // OAuthClientType represents the type of client (web or CLI).
@@ -137,10 +249,24 @@ func (s *OAuthService) getClientConfig(clientType OAuthClientType) OAuthClientCo
 }
 
 // IsProviderConfiguredForClient returns true if the specified provider is configured
-// for the given client type.
+// for the given client type. The custom provider additionally requires its
+// provider-level endpoint URLs (s.config.Custom) to be set, since credentials
+// alone are not enough to drive a config-driven corporate SSO flow.
 func (s *OAuthService) IsProviderConfiguredForClient(clientType OAuthClientType, provider string) bool {
 	cfg := s.getClientConfig(clientType)
-	return cfg.IsProviderConfigured(provider)
+	if !cfg.IsProviderConfigured(provider) {
+		return false
+	}
+	if provider == hubclient.OAuthProviderCustom {
+		return s.config.Custom.IsConfigured()
+	}
+	return true
+}
+
+// CustomDisplayName returns the display name for the custom OAuth provider,
+// falling back to "SSO" when unset.
+func (s *OAuthService) CustomDisplayName() string {
+	return s.config.Custom.EffectiveDisplayName()
 }
 
 // ConfiguredProvidersForClient returns the configured OAuth providers for the
@@ -212,6 +338,8 @@ func (s *OAuthService) GetAuthorizationURLForClient(clientType OAuthClientType, 
 		return s.getGoogleAuthURLWithConfig(cfg.Google, callbackURL, state)
 	case hubclient.OAuthProviderGitHub:
 		return s.getGitHubAuthURLWithConfig(cfg.GitHub, callbackURL, state)
+	case hubclient.OAuthProviderCustom:
+		return s.getCustomAuthorizationURL(cfg.Custom, callbackURL, state)
 	default:
 		return "", fmt.Errorf("unsupported OAuth provider: %s", provider)
 	}
@@ -266,6 +394,33 @@ func (s *OAuthService) getGitHubAuthURLWithConfig(cfg OAuthProviderConfig, callb
 	return githubAuthURL + "?" + params.Encode(), nil
 }
 
+// getCustomAuthorizationURL generates a custom-provider OAuth authorization URL.
+// Unlike Google/GitHub, the endpoint and scopes are configuration-driven
+// (s.config.Custom) rather than hardcoded, since this targets arbitrary
+// corporate SSO providers.
+func (s *OAuthService) getCustomAuthorizationURL(cfg OAuthProviderConfig, callbackURL, state string) (string, error) {
+	if cfg.ClientID == "" || !s.config.Custom.IsConfigured() {
+		return "", fmt.Errorf("custom OAuth provider is not configured")
+	}
+
+	// Parse (rather than string-concatenate) so pre-existing query parameters
+	// on operator-supplied authorize URLs survive — e.g. Azure AD B2C's
+	// "?p=<policy>" tenant policy parameter.
+	u, err := url.Parse(s.config.Custom.AuthorizeURL)
+	if err != nil {
+		return "", fmt.Errorf("custom OAuth authorize URL is invalid: %w", err)
+	}
+	q := u.Query()
+	q.Set("client_id", cfg.ClientID)
+	q.Set("redirect_uri", callbackURL)
+	q.Set("response_type", "code")
+	q.Set("scope", s.config.Custom.EffectiveScopes())
+	q.Set("state", state)
+	u.RawQuery = q.Encode()
+
+	return u.String(), nil
+}
+
 // ExchangeCode exchanges an authorization code for user information.
 // Uses the default (CLI) client configuration for backward compatibility.
 func (s *OAuthService) ExchangeCode(ctx context.Context, provider, code, callbackURL string) (*OAuthUserInfo, error) {
@@ -282,6 +437,8 @@ func (s *OAuthService) ExchangeCodeForClient(ctx context.Context, clientType OAu
 		return s.exchangeGoogleCodeWithConfig(ctx, cfg.Google, code, callbackURL)
 	case "github":
 		return s.exchangeGitHubCodeWithConfig(ctx, cfg.GitHub, code, callbackURL)
+	case hubclient.OAuthProviderCustom:
+		return s.exchangeCustomCodeWithConfig(ctx, cfg.Custom, code, callbackURL)
 	default:
 		return nil, fmt.Errorf("unsupported OAuth provider: %s", provider)
 	}
@@ -343,6 +500,30 @@ func (s *OAuthService) exchangeGitHubCodeWithConfig(ctx context.Context, cfg OAu
 	return userInfo, nil
 }
 
+// exchangeCustomCodeWithConfig exchanges a custom-provider authorization code for user info.
+func (s *OAuthService) exchangeCustomCodeWithConfig(ctx context.Context, cfg OAuthProviderConfig, code, callbackURL string) (*OAuthUserInfo, error) {
+	if cfg.ClientID == "" || cfg.ClientSecret == "" {
+		return nil, fmt.Errorf("custom OAuth provider is not configured")
+	}
+
+	// Exchange code for access token
+	tokenResp, err := s.exchangeCodeForToken(ctx, s.config.Custom.TokenURL, cfg.ClientID, cfg.ClientSecret, code, callbackURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to exchange custom code: %w", err)
+	}
+	if tokenResp.AccessToken == "" {
+		return nil, fmt.Errorf("custom token endpoint returned no access_token")
+	}
+
+	// Get user info
+	userInfo, err := s.getCustomUserInfo(ctx, tokenResp.AccessToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get custom user info: %w", err)
+	}
+
+	return userInfo, nil
+}
+
 // tokenResponse represents the response from an OAuth token endpoint.
 type tokenResponse struct {
 	AccessToken  string `json:"access_token"`
@@ -352,7 +533,8 @@ type tokenResponse struct {
 	Scope        string `json:"scope"`
 }
 
-// exchangeCodeForToken exchanges an authorization code for an access token (Google).
+// exchangeCodeForToken exchanges an authorization code for an access token.
+// Shared by the Google and custom provider flows.
 func (s *OAuthService) exchangeCodeForToken(ctx context.Context, tokenURL, clientID, clientSecret, code, callbackURL string) (*tokenResponse, error) {
 	data := url.Values{
 		"grant_type":    {"authorization_code"},
@@ -367,6 +549,9 @@ func (s *OAuthService) exchangeCodeForToken(ctx context.Context, tokenURL, clien
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Harmless for RFC-compliant servers; required by GitHub-style endpoints
+	// that otherwise respond with application/x-www-form-urlencoded.
+	req.Header.Set("Accept", "application/json")
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
@@ -375,7 +560,7 @@ func (s *OAuthService) exchangeCodeForToken(ctx context.Context, tokenURL, clien
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("token exchange failed: %s - %s", resp.Status, string(body))
 	}
 
@@ -591,6 +776,62 @@ func (s *OAuthService) getGitHubPrimaryEmail(ctx context.Context, accessToken st
 	return "", fmt.Errorf("no email found")
 }
 
+// getCustomUserInfo retrieves user information from the configured custom
+// provider's userinfo endpoint, mapping claims per s.config.Custom's
+// configured (or defaulted) claim keys. Per the design spec, identity comes
+// from this endpoint over TLS rather than ID-token/JWKS verification.
+func (s *OAuthService) getCustomUserInfo(ctx context.Context, accessToken string) (*OAuthUserInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", s.config.Custom.UserinfoURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("failed to get user info: %s - %s", resp.Status, string(body))
+	}
+
+	var claims map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&claims); err != nil {
+		return nil, fmt.Errorf("failed to decode user info: %w", err)
+	}
+
+	claim := func(key string) string {
+		v, _ := claims[key].(string)
+		return v
+	}
+
+	emailClaim := s.config.Custom.EffectiveEmailClaim()
+	email := claim(emailClaim)
+	if email == "" {
+		return nil, fmt.Errorf("custom userinfo response missing email claim %q", emailClaim)
+	}
+
+	// "sub" is hardcoded, not mapped via a *_claim setting like email/name/avatar:
+	// the ID isn't the join key for identity (email is), so it doesn't need to be
+	// configurable per IdP.
+	id := claim("sub")
+	if id == "" {
+		id = email
+	}
+
+	return &OAuthUserInfo{
+		ID:          id,
+		Email:       email,
+		DisplayName: claim(s.config.Custom.EffectiveNameClaim()),
+		AvatarURL:   claim(s.config.Custom.EffectiveAvatarClaim()),
+		Provider:    hubclient.OAuthProviderCustom,
+	}, nil
+}
+
 // DeviceCodeResponse holds the response from a device authorization request.
 type DeviceCodeResponse struct {
 	DeviceCode              string `json:"device_code"`
@@ -631,6 +872,11 @@ func (s *OAuthService) RequestDeviceCode(ctx context.Context, clientType OAuthCl
 		return s.requestGoogleDeviceCode(ctx, cfg.Google)
 	case "github":
 		return s.requestGitHubDeviceCode(ctx, cfg.GitHub)
+	case hubclient.OAuthProviderCustom:
+		if s.config.Custom.DeviceAuthorizationURL == "" {
+			return nil, fmt.Errorf("provider %q does not support device-flow login", hubclient.OAuthProviderCustom)
+		}
+		return s.requestCustomDeviceCode(ctx, cfg.Custom)
 	default:
 		return nil, fmt.Errorf("unsupported OAuth provider for device flow: %s", provider)
 	}
@@ -679,6 +925,47 @@ func (s *OAuthService) requestGoogleDeviceCode(ctx context.Context, cfg OAuthPro
 	}, nil
 }
 
+// requestCustomDeviceCode initiates the RFC 8628 device authorization flow
+// against the operator-configured custom provider. Unlike Google
+// (non-standard "verification_url") and GitHub (200 status with an error
+// body), this targets a plain standards-compliant device authorization
+// endpoint, so the shared DeviceCodeResponse type decodes directly.
+func (s *OAuthService) requestCustomDeviceCode(ctx context.Context, cfg OAuthProviderConfig) (*DeviceCodeResponse, error) {
+	if cfg.ClientID == "" {
+		return nil, fmt.Errorf("custom OAuth provider is not configured")
+	}
+
+	data := url.Values{
+		"client_id": {cfg.ClientID},
+		"scope":     {s.config.Custom.EffectiveScopes()},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", s.config.Custom.DeviceAuthorizationURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("device code request failed: %s - %s", resp.Status, string(body))
+	}
+
+	var result DeviceCodeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode device code response: %w", err)
+	}
+
+	return &result, nil
+}
+
 func (s *OAuthService) requestGitHubDeviceCode(ctx context.Context, cfg OAuthProviderConfig) (*DeviceCodeResponse, error) {
 	if cfg.ClientID == "" {
 		return nil, fmt.Errorf("GitHub OAuth is not configured")
@@ -725,6 +1012,8 @@ func (s *OAuthService) PollDeviceToken(ctx context.Context, clientType OAuthClie
 		return s.pollGoogleDeviceToken(ctx, cfg.Google, deviceCode)
 	case "github":
 		return s.pollGitHubDeviceToken(ctx, cfg.GitHub, deviceCode)
+	case hubclient.OAuthProviderCustom:
+		return s.pollCustomDeviceToken(ctx, cfg.Custom, deviceCode)
 	default:
 		return nil, fmt.Errorf("unsupported OAuth provider for device flow: %s", provider)
 	}
@@ -831,4 +1120,59 @@ func (s *OAuthService) pollGitHubDeviceToken(ctx context.Context, cfg OAuthProvi
 	}
 
 	return nil, fmt.Errorf("device token poll failed: %s - %s", resp.Status, string(body))
+}
+
+// pollCustomDeviceToken polls the operator-configured custom provider's
+// token endpoint per RFC 8628 section 3.4/3.5. authorization_pending,
+// slow_down, and expired_token all map to *DeviceAuthError, the codebase's
+// existing pending/terminal signal (see pollGoogleDeviceToken); any other
+// "error" value (e.g. access_denied) is a plain terminal error.
+func (s *OAuthService) pollCustomDeviceToken(ctx context.Context, cfg OAuthProviderConfig, deviceCode string) (*tokenResponse, error) {
+	data := url.Values{
+		"grant_type":    {"urn:ietf:params:oauth:grant-type:device_code"},
+		"device_code":   {deviceCode},
+		"client_id":     {cfg.ClientID},
+		"client_secret": {cfg.ClientSecret},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", s.config.Custom.TokenURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read device token response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var tokenResp tokenResponse
+		if err := json.Unmarshal(body, &tokenResp); err != nil {
+			return nil, fmt.Errorf("failed to decode token response: %w", err)
+		}
+		if tokenResp.AccessToken == "" {
+			return nil, fmt.Errorf("no access token in response: %s", string(body))
+		}
+		return &tokenResp, nil
+	}
+
+	var errResp deviceTokenErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, fmt.Errorf("device token poll failed: %s - %s", resp.Status, string(body))
+	}
+
+	switch errResp.Error {
+	case "authorization_pending", "slow_down", "expired_token":
+		return nil, &DeviceAuthError{Code: errResp.Error, Interval: errResp.Interval}
+	default:
+		return nil, fmt.Errorf("device token poll failed: %s", errResp.Error)
+	}
 }

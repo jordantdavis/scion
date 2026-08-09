@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GoogleCloudPlatform/scion/pkg/hubclient"
 	"github.com/GoogleCloudPlatform/scion/pkg/store"
 	"github.com/google/uuid"
 )
@@ -113,7 +114,7 @@ type AuthLogoutResponse struct {
 type CLIAuthAuthorizeRequest struct {
 	CallbackURL string `json:"callbackUrl"`
 	State       string `json:"state"`
-	Provider    string `json:"provider,omitempty"` // "google" (default) or "github"
+	Provider    string `json:"provider,omitempty"` // "google" (default), "github", or "custom"
 }
 
 // CLIAuthProvidersResponse is the response for GET /api/v1/auth/providers.
@@ -131,7 +132,7 @@ type CLIAuthAuthorizeResponse struct {
 type CLIAuthTokenRequest struct {
 	Code        string `json:"code"`
 	CallbackURL string `json:"callbackUrl"`
-	Provider    string `json:"provider,omitempty"` // "google" (default) or "github"
+	Provider    string `json:"provider,omitempty"` // "google" (default), "github", or "custom"
 }
 
 // CLIAuthTokenResponse is the response for /api/v1/auth/cli/token.
@@ -235,7 +236,7 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	provider := strings.ToLower(strings.TrimSpace(req.Provider))
-	if provider != "google" && provider != "github" {
+	if !hubclient.IsKnownOAuthProvider(provider) {
 		writeError(w, http.StatusBadRequest, "invalid_provider",
 			"unsupported OAuth provider", nil)
 		return
@@ -342,7 +343,7 @@ func (s *Server) handleAuthToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate provider is a known value
-	if provider != "google" && provider != "github" {
+	if !hubclient.IsKnownOAuthProvider(provider) {
 		writeError(w, http.StatusBadRequest, "invalid_provider",
 			"unsupported OAuth provider", nil)
 		return
@@ -1123,6 +1124,8 @@ func (s *Server) getDeviceFlowUserInfo(ctx context.Context, provider, accessToke
 		return s.oauthService.getGoogleUserInfo(ctx, accessToken)
 	case "github":
 		return s.oauthService.getGitHubUserInfo(ctx, accessToken)
+	case hubclient.OAuthProviderCustom:
+		return s.oauthService.getCustomUserInfo(ctx, accessToken)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", provider)
 	}

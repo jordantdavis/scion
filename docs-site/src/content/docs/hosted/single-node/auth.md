@@ -72,6 +72,122 @@ export SCION_SERVER_OAUTH_CLI_GITHUB_CLIENTID="your-client-id"
 export SCION_SERVER_OAUTH_CLI_GITHUB_CLIENTSECRET="your-client-secret"
 ```
 
+### Custom OAuth Provider (Corporate SSO)
+
+Scion also supports a third, config-driven OAuth 2.0 provider — fixed ID `custom` — for
+organizations running their own SSO (Okta, Entra ID, Keycloak, Auth0, or a homegrown
+identity provider). Unlike Google and GitHub, none of its endpoints are hardcoded: you
+supply the authorize, token, and userinfo URLs yourself. If your IdP is OIDC-compliant,
+these three URLs can simply be pasted from its discovery document
+(`/.well-known/openid-configuration`) — Scion does not perform OIDC discovery itself, it
+just needs the resolved endpoints.
+
+#### Configuration
+
+Add an `oauth.custom` block to `settings.yaml`, alongside credentials for whichever
+clients (web, CLI, device) you want to support.
+
+The `custom` provider only appears (in `/auth/providers`, the login page, and the
+CLI's provider list) once **both** of the following are true: the three endpoint
+URLs (`authorize_url`, `token_url`, `userinfo_url`) are set under `oauth.custom`,
+**and** a non-empty `client_id`/`client_secret` pair exists for that client type
+under `oauth.<web|cli|device>.custom`. The two halves fail differently if you get
+only one of them: credentials set without the endpoint URLs is a hard startup
+error; endpoint URLs set without any credentials leaves the provider silently
+inactive — no startup error and no log line. Double-check both halves are filled
+in for each client type you intend to support:
+
+```yaml
+server:
+  oauth:
+    custom:
+      display_name: "Acme SSO"                              # optional; default "SSO"
+      authorize_url: "https://sso.acme.com/oauth2/authorize"
+      token_url: "https://sso.acme.com/oauth2/token"
+      userinfo_url: "https://sso.acme.com/oauth2/userinfo"
+      device_authorization_url: ""                          # optional; set to enable device flow
+      scopes: "openid email profile"                        # default
+      email_claim: "email"                                  # optional; defaults shown
+      name_claim: "name"
+      avatar_claim: "picture"
+    web:
+      custom: { client_id: "<your-client-id>", client_secret: "<your-client-secret>" }
+    cli:
+      custom: { client_id: "<your-client-id>", client_secret: "<your-client-secret>" }
+    device:
+      custom: { client_id: "", client_secret: "" }           # leave empty unless device_authorization_url (above) is also set
+```
+
+As with Google/GitHub, client secrets should not be committed to `settings.yaml` — set
+them via environment variables or a secret backend instead.
+
+#### Environment variables
+
+| Variable | Settings key |
+| :--- | :--- |
+| `SCION_SERVER_OAUTH_CUSTOM_DISPLAYNAME` | `oauth.custom.display_name` |
+| `SCION_SERVER_OAUTH_CUSTOM_AUTHORIZEURL` | `oauth.custom.authorize_url` |
+| `SCION_SERVER_OAUTH_CUSTOM_TOKENURL` | `oauth.custom.token_url` |
+| `SCION_SERVER_OAUTH_CUSTOM_USERINFOURL` | `oauth.custom.userinfo_url` |
+| `SCION_SERVER_OAUTH_CUSTOM_DEVICEAUTHORIZATIONURL` | `oauth.custom.device_authorization_url` |
+| `SCION_SERVER_OAUTH_CUSTOM_SCOPES` | `oauth.custom.scopes` |
+| `SCION_SERVER_OAUTH_CUSTOM_EMAILCLAIM` | `oauth.custom.email_claim` |
+| `SCION_SERVER_OAUTH_CUSTOM_NAMECLAIM` | `oauth.custom.name_claim` |
+| `SCION_SERVER_OAUTH_CUSTOM_AVATARCLAIM` | `oauth.custom.avatar_claim` |
+| `SCION_SERVER_OAUTH_WEB_CUSTOM_CLIENTID` / `_CLIENTSECRET` | `oauth.web.custom.client_id` / `client_secret` |
+| `SCION_SERVER_OAUTH_CLI_CUSTOM_CLIENTID` / `_CLIENTSECRET` | `oauth.cli.custom.client_id` / `client_secret` |
+| `SCION_SERVER_OAUTH_DEVICE_CUSTOM_CLIENTID` / `_CLIENTSECRET` | `oauth.device.custom.client_id` / `client_secret` |
+
+Same derivation rule as the rest of `server.*` settings: multi-word segments are squashed
+without underscores in the env var name (see [Server Configuration
+Reference](/scion/reference/server-config/#environment-variables)).
+
+#### Claim mapping
+
+By default Scion reads `email`, `name`, and `picture` from the userinfo response —
+correct for most OIDC-compliant IdPs (Okta, Entra ID, Keycloak, Auth0):
+
+```yaml
+server:
+  oauth:
+    custom:
+      userinfo_url: "https://acme.okta.com/oauth2/v1/userinfo"
+      # email_claim / name_claim / avatar_claim left at their defaults
+```
+
+If your IdP exposes a bespoke `/me` endpoint with different field names, map them
+explicitly. For example, an internal directory service returning
+`{"sub":"...", "mail":"...", "displayName":"...", "photo":"..."}`:
+
+```yaml
+server:
+  oauth:
+    custom:
+      userinfo_url: "https://directory.acme.internal/me"
+      email_claim: "mail"
+      name_claim: "displayName"
+      avatar_claim: "photo"
+```
+
+Claim keys are top-level JSON keys only (no dotted or nested paths). A missing or empty
+email claim is a hard login failure.
+
+#### Device flow
+
+The device authorization grant (RFC 8628) for `custom` is opt-in: it activates only when
+`device_authorization_url` is set. Leave it empty to support only the browser and
+CLI-localhost-callback flows.
+
+#### Trust model
+
+The `userinfo_url` is trust-critical: whoever controls hub configuration controls who can
+authenticate. Treat hub config with the same care as the IdP itself.
+
+Because Scion keys accounts by email address, this also matters when `custom` is
+configured alongside Google/GitHub: any identity provider you point `userinfo_url`
+at can authenticate as any existing user with a matching email — including
+administrators. Only configure an IdP you trust to verify email ownership.
+
 ## Domain Authorization
 
 You can restrict authentication to specific email domains using the `SCION_AUTHORIZED_DOMAINS` setting. This provides an additional layer of access control beyond OAuth authentication.

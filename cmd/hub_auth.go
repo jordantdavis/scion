@@ -108,7 +108,7 @@ func init() {
 	// Flags for login command
 	hubAuthLoginCmd.Flags().StringVar(&hubAuthHubURL, "hub-url", "", "Hub server URL (defaults to configured endpoint)")
 	hubAuthLoginCmd.Flags().BoolVar(&hubAuthNoBrowser, "no-browser", false, "Use device flow instead of opening a browser")
-	hubAuthLoginCmd.Flags().String("provider", "", "OAuth provider to use (google or github)")
+	hubAuthLoginCmd.Flags().String("provider", "", fmt.Sprintf("OAuth provider to use (%s)", strings.Join(hubclient.OAuthProviderOrder(), ", ")))
 }
 
 func runHubAuthLogin(cmd *cobra.Command, args []string) error {

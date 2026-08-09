@@ -293,12 +293,29 @@ type OAuthProviderConfig struct {
 	ClientSecret string `json:"clientSecret" yaml:"clientSecret" koanf:"clientSecret"`
 }
 
+// OAuthCustomProviderConfig holds provider-level settings for the config-driven
+// custom OAuth provider (corporate SSO). Endpoint URLs are defined once here;
+// per-client-type credentials live in OAuthClientConfig.Custom.
+type OAuthCustomProviderConfig struct {
+	DisplayName            string `json:"displayName,omitempty" yaml:"displayName,omitempty" koanf:"displayName"`
+	AuthorizeURL           string `json:"authorizeUrl,omitempty" yaml:"authorizeUrl,omitempty" koanf:"authorizeUrl"`
+	TokenURL               string `json:"tokenUrl,omitempty" yaml:"tokenUrl,omitempty" koanf:"tokenUrl"`
+	UserinfoURL            string `json:"userinfoUrl,omitempty" yaml:"userinfoUrl,omitempty" koanf:"userinfoUrl"`
+	DeviceAuthorizationURL string `json:"deviceAuthorizationUrl,omitempty" yaml:"deviceAuthorizationUrl,omitempty" koanf:"deviceAuthorizationUrl"`
+	Scopes                 string `json:"scopes,omitempty" yaml:"scopes,omitempty" koanf:"scopes"`
+	EmailClaim             string `json:"emailClaim,omitempty" yaml:"emailClaim,omitempty" koanf:"emailClaim"`
+	NameClaim              string `json:"nameClaim,omitempty" yaml:"nameClaim,omitempty" koanf:"nameClaim"`
+	AvatarClaim            string `json:"avatarClaim,omitempty" yaml:"avatarClaim,omitempty" koanf:"avatarClaim"`
+}
+
 // OAuthClientConfig holds OAuth provider configurations for a specific client type.
 type OAuthClientConfig struct {
 	// Google OAuth settings for this client type.
 	Google OAuthProviderConfig `json:"google" yaml:"google" koanf:"google"`
 	// GitHub OAuth settings for this client type.
 	GitHub OAuthProviderConfig `json:"github" yaml:"github" koanf:"github"`
+	// Custom OAuth settings for this client type (config-driven corporate SSO).
+	Custom OAuthProviderConfig `json:"custom" yaml:"custom" koanf:"custom"`
 }
 
 // OAuthConfig holds OAuth provider configurations.
@@ -310,6 +327,8 @@ type OAuthConfig struct {
 	CLI OAuthClientConfig `json:"cli" yaml:"cli" koanf:"cli"`
 	// Device OAuth client settings (for device authorization grant / headless flows).
 	Device OAuthClientConfig `json:"device" yaml:"device" koanf:"device"`
+	// Custom holds provider-level settings for the custom OAuth provider.
+	Custom OAuthCustomProviderConfig `json:"custom,omitempty" yaml:"custom,omitempty" koanf:"custom"`
 }
 
 // OIDCProviderConfig holds configuration for the OIDC Identity Provider feature.
@@ -829,7 +848,9 @@ var camelCaseFields = map[string]string{
 	"apibaseurl":                    "apiBaseUrl",
 	"appid":                         "appId",
 	"authorizeddomains":             "authorizedDomains",
+	"authorizeurl":                  "authorizeUrl",
 	"autosuspendstalled":            "autoSuspendStalled",
+	"avatarclaim":                   "avatarClaim",
 	"brokerid":                      "brokerId",
 	"brokername":                    "brokerName",
 	"clientid":                      "clientId",
@@ -840,11 +861,13 @@ var camelCaseFields = map[string]string{
 	"corsallowedorigins":            "corsAllowedOrigins",
 	"corsenabled":                   "corsEnabled",
 	"corsmaxage":                    "corsMaxAge",
+	"deviceauthorizationurl":        "deviceAuthorizationUrl",
 	"devmode":                       "devMode",
 	"devtoken":                      "devToken",
 	"devtokenfile":                  "devTokenFile",
 	"disablelegacystoragefallback":  "disableLegacyStorageFallback",
 	"displayname":                   "displayName",
+	"emailclaim":                    "emailClaim",
 	"gcpcredentials":                "gcpCredentials",
 	"gcpprojectid":                  "gcpProjectId",
 	"githubapp":                     "githubApp",
@@ -857,6 +880,7 @@ var camelCaseFields = map[string]string{
 	"logformat":                     "logFormat",
 	"loglevel":                      "logLevel",
 	"maintenancemessage":            "maintenanceMessage",
+	"nameclaim":                     "nameClaim",
 	"oidcaudience":                  "oidcAudience",
 	"platformauthsa":                "platformAuthSA",
 	"privatekey":                    "privateKey",
@@ -868,7 +892,9 @@ var camelCaseFields = map[string]string{
 	"softdeleteretainfiles":         "softDeleteRetainFiles",
 	"softdeleteretention":           "softDeleteRetention",
 	"telemetryenabled":              "telemetryEnabled",
+	"tokenurl":                      "tokenUrl",
 	"useraccessmode":                "userAccessMode",
+	"userinfourl":                   "userinfoUrl",
 	"webhooksenabled":               "webhooksEnabled",
 	"webhooksecret":                 "webhookSecret",
 	"writetimeout":                  "writeTimeout",

@@ -59,6 +59,13 @@ provider rather than a full OIDC client.
   enterprise IdPs; pluggable-proxy goal at :39), `ha-oidc.md` (transport-layer
   OIDC for machine clients traversing IAP — unrelated to user login despite the
   name).
+- No existing design doc roadmaps additional OAuth providers. The nearest
+  prior intent is `hosted/auth/auth-overview.md:49`, whose designed User model
+  reads `Provider string // "google", "github", etc.` alongside a `ProviderID`
+  field — anticipating more providers and provider-scoped identity. Neither
+  field was ever implemented (`store.User` is email-only), which is exactly
+  the gap Future Work item 2 tracks. `hosted/auth/oauth-setup.md` and
+  `auth-milestones.md` enumerate only Google/GitHub with no expansion plans.
 
 ## Design
 

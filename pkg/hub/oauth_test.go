@@ -736,6 +736,81 @@ func TestCustomExchangeEmptyAccessTokenFails(t *testing.T) {
 	}
 }
 
+func TestCustomDeviceFlowUnconfigured(t *testing.T) {
+	// DeviceAuthorizationURL is unset: the custom provider must refuse device
+	// flow at runtime even though Task 3's ValidateOAuthConfig would already
+	// have rejected this combination at server start — defence in depth.
+	svc := NewOAuthService(OAuthConfig{
+		Custom: OAuthCustomProviderConfig{AuthorizeURL: "https://a/x", TokenURL: "https://a/t", UserinfoURL: "https://a/u"},
+		Device: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "cid"}},
+	})
+	_, err := svc.RequestDeviceCode(context.Background(), OAuthClientTypeDevice, hubclient.OAuthProviderCustom)
+	if err == nil || !strings.Contains(err.Error(), "does not support device-flow") {
+		t.Fatalf("err = %v, want does-not-support error", err)
+	}
+}
+
+func TestCustomDeviceFlow(t *testing.T) {
+	polls := 0
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/device":
+			_, _ = w.Write([]byte(`{"device_code":"dc-1","user_code":"ABCD-1234","verification_uri":"https://sso.acme.com/activate","expires_in":900,"interval":1}`))
+		case "/token":
+			polls++
+			switch polls {
+			case 1:
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
+			case 2:
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"slow_down"}`))
+			default:
+				_, _ = w.Write([]byte(`{"access_token":"at-dev","token_type":"Bearer"}`))
+			}
+		}
+	}))
+	defer idp.Close()
+	svc := NewOAuthService(OAuthConfig{
+		Custom: OAuthCustomProviderConfig{
+			AuthorizeURL: idp.URL + "/a", TokenURL: idp.URL + "/token", UserinfoURL: idp.URL + "/u",
+			DeviceAuthorizationURL: idp.URL + "/device",
+		},
+		Device: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "cid", ClientSecret: "sec"}},
+	})
+
+	dc, err := svc.RequestDeviceCode(context.Background(), OAuthClientTypeDevice, hubclient.OAuthProviderCustom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dc.UserCode != "ABCD-1234" || dc.VerificationURI == "" {
+		t.Fatalf("device code response = %+v", dc)
+	}
+
+	// First poll: authorization_pending maps to the codebase's existing
+	// pending signal, *DeviceAuthError (see pollGoogleDeviceToken /
+	// pollGitHubDeviceToken), with a nil token.
+	tok1, err1 := svc.PollDeviceToken(context.Background(), OAuthClientTypeDevice, hubclient.OAuthProviderCustom, "dc-1")
+	authErr1, ok := err1.(*DeviceAuthError)
+	if !ok || authErr1.Code != "authorization_pending" || tok1 != nil {
+		t.Fatalf("first poll: tok=%v err=%v, want *DeviceAuthError{Code: authorization_pending}", tok1, err1)
+	}
+
+	// Second poll: slow_down uses the same pending-signal convention.
+	tok2, err2 := svc.PollDeviceToken(context.Background(), OAuthClientTypeDevice, hubclient.OAuthProviderCustom, "dc-1")
+	authErr2, ok := err2.(*DeviceAuthError)
+	if !ok || authErr2.Code != "slow_down" || tok2 != nil {
+		t.Fatalf("second poll: tok=%v err=%v, want *DeviceAuthError{Code: slow_down}", tok2, err2)
+	}
+
+	// Third poll: success.
+	tok3, err3 := svc.PollDeviceToken(context.Background(), OAuthClientTypeDevice, hubclient.OAuthProviderCustom, "dc-1")
+	if err3 != nil || tok3 == nil || tok3.AccessToken != "at-dev" {
+		t.Fatalf("third poll: tok=%+v err=%v", tok3, err3)
+	}
+}
+
 func TestCustomTokenEndpointErrorFails(t *testing.T) {
 	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/token" {

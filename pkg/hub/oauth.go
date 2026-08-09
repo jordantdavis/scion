@@ -854,6 +854,11 @@ func (s *OAuthService) RequestDeviceCode(ctx context.Context, clientType OAuthCl
 		return s.requestGoogleDeviceCode(ctx, cfg.Google)
 	case "github":
 		return s.requestGitHubDeviceCode(ctx, cfg.GitHub)
+	case hubclient.OAuthProviderCustom:
+		if s.config.Custom.DeviceAuthorizationURL == "" {
+			return nil, fmt.Errorf("provider %q does not support device-flow login", hubclient.OAuthProviderCustom)
+		}
+		return s.requestCustomDeviceCode(ctx, cfg.Custom)
 	default:
 		return nil, fmt.Errorf("unsupported OAuth provider for device flow: %s", provider)
 	}
@@ -902,6 +907,47 @@ func (s *OAuthService) requestGoogleDeviceCode(ctx context.Context, cfg OAuthPro
 	}, nil
 }
 
+// requestCustomDeviceCode initiates the RFC 8628 device authorization flow
+// against the operator-configured custom provider. Unlike Google
+// (non-standard "verification_url") and GitHub (200 status with an error
+// body), this targets a plain standards-compliant device authorization
+// endpoint, so the shared DeviceCodeResponse type decodes directly.
+func (s *OAuthService) requestCustomDeviceCode(ctx context.Context, cfg OAuthProviderConfig) (*DeviceCodeResponse, error) {
+	if cfg.ClientID == "" {
+		return nil, fmt.Errorf("custom OAuth provider is not configured")
+	}
+
+	data := url.Values{
+		"client_id": {cfg.ClientID},
+		"scope":     {s.config.Custom.EffectiveScopes()},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", s.config.Custom.DeviceAuthorizationURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("device code request failed: %s - %s", resp.Status, string(body))
+	}
+
+	var result DeviceCodeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode device code response: %w", err)
+	}
+
+	return &result, nil
+}
+
 func (s *OAuthService) requestGitHubDeviceCode(ctx context.Context, cfg OAuthProviderConfig) (*DeviceCodeResponse, error) {
 	if cfg.ClientID == "" {
 		return nil, fmt.Errorf("GitHub OAuth is not configured")
@@ -948,6 +994,8 @@ func (s *OAuthService) PollDeviceToken(ctx context.Context, clientType OAuthClie
 		return s.pollGoogleDeviceToken(ctx, cfg.Google, deviceCode)
 	case "github":
 		return s.pollGitHubDeviceToken(ctx, cfg.GitHub, deviceCode)
+	case hubclient.OAuthProviderCustom:
+		return s.pollCustomDeviceToken(ctx, cfg.Custom, deviceCode)
 	default:
 		return nil, fmt.Errorf("unsupported OAuth provider for device flow: %s", provider)
 	}
@@ -1054,4 +1102,59 @@ func (s *OAuthService) pollGitHubDeviceToken(ctx context.Context, cfg OAuthProvi
 	}
 
 	return nil, fmt.Errorf("device token poll failed: %s - %s", resp.Status, string(body))
+}
+
+// pollCustomDeviceToken polls the operator-configured custom provider's
+// token endpoint per RFC 8628 section 3.4/3.5. authorization_pending,
+// slow_down, and expired_token all map to *DeviceAuthError, the codebase's
+// existing pending/terminal signal (see pollGoogleDeviceToken); any other
+// "error" value (e.g. access_denied) is a plain terminal error.
+func (s *OAuthService) pollCustomDeviceToken(ctx context.Context, cfg OAuthProviderConfig, deviceCode string) (*tokenResponse, error) {
+	data := url.Values{
+		"grant_type":    {"urn:ietf:params:oauth:grant-type:device_code"},
+		"device_code":   {deviceCode},
+		"client_id":     {cfg.ClientID},
+		"client_secret": {cfg.ClientSecret},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", s.config.Custom.TokenURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read device token response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var tokenResp tokenResponse
+		if err := json.Unmarshal(body, &tokenResp); err != nil {
+			return nil, fmt.Errorf("failed to decode token response: %w", err)
+		}
+		if tokenResp.AccessToken == "" {
+			return nil, fmt.Errorf("no access token in response: %s", string(body))
+		}
+		return &tokenResp, nil
+	}
+
+	var errResp deviceTokenErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, fmt.Errorf("device token poll failed: %s - %s", resp.Status, string(body))
+	}
+
+	switch errResp.Error {
+	case "authorization_pending", "slow_down", "expired_token":
+		return nil, &DeviceAuthError{Code: errResp.Error, Interval: errResp.Interval}
+	default:
+		return nil, fmt.Errorf("device token poll failed: %s", errResp.Error)
+	}
 }

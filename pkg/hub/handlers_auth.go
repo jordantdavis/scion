@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GoogleCloudPlatform/scion/pkg/hubclient"
 	"github.com/GoogleCloudPlatform/scion/pkg/store"
 	"github.com/google/uuid"
 )
@@ -1123,6 +1124,8 @@ func (s *Server) getDeviceFlowUserInfo(ctx context.Context, provider, accessToke
 		return s.oauthService.getGoogleUserInfo(ctx, accessToken)
 	case "github":
 		return s.oauthService.getGitHubUserInfo(ctx, accessToken)
+	case hubclient.OAuthProviderCustom:
+		return s.oauthService.getCustomUserInfo(ctx, accessToken)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", provider)
 	}

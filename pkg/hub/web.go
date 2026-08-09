@@ -1917,8 +1917,8 @@ func (ws *WebServer) handleAuthProviders(w http.ResponseWriter, r *http.Request)
 	if ws.config.AuthMode == "proxy" {
 		resp["authMode"] = "proxy"
 	} else if ws.oauthService != nil {
-		resp["google"] = ws.oauthService.IsProviderConfiguredForClient(OAuthClientTypeWeb, "google")
-		resp["github"] = ws.oauthService.IsProviderConfiguredForClient(OAuthClientTypeWeb, "github")
+		resp["google"] = ws.oauthService.IsProviderConfiguredForClient(OAuthClientTypeWeb, hubclient.OAuthProviderGoogle)
+		resp["github"] = ws.oauthService.IsProviderConfiguredForClient(OAuthClientTypeWeb, hubclient.OAuthProviderGitHub)
 		if ws.oauthService.IsProviderConfiguredForClient(OAuthClientTypeWeb, hubclient.OAuthProviderCustom) {
 			resp["custom"] = true
 			resp["customDisplayName"] = ws.oauthService.CustomDisplayName()

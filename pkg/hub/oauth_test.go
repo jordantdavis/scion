@@ -488,6 +488,49 @@ func TestOAuthService_IsProviderConfiguredForClient(t *testing.T) {
 	}
 }
 
+// TestOAuthService_IsProviderConfiguredForClient_CustomBothHalvesRequired
+// pins the AND in the custom-provider branch of IsProviderConfiguredForClient
+// (oauth.go): the custom provider is only "configured" when BOTH per-client
+// credentials AND the provider-level endpoint URLs (OAuthConfig.Custom) are
+// set. Without this coverage, collapsing the AND back to a plain
+// cfg.IsProviderConfigured(provider) check would pass the rest of the suite
+// silently, since every other custom-provider test configures both halves.
+func TestOAuthService_IsProviderConfiguredForClient_CustomBothHalvesRequired(t *testing.T) {
+	t.Run("credentials without endpoint URLs", func(t *testing.T) {
+		svc := NewOAuthService(OAuthConfig{
+			CLI: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "id", ClientSecret: "sec"}},
+			// Custom (provider-level endpoint URLs) intentionally left empty.
+		})
+		if svc.IsProviderConfiguredForClient(OAuthClientTypeCLI, hubclient.OAuthProviderCustom) {
+			t.Fatal("expected false: credentials set but endpoint URLs are not")
+		}
+	})
+
+	t.Run("endpoint URLs without credentials", func(t *testing.T) {
+		svc := NewOAuthService(OAuthConfig{
+			Custom: OAuthCustomProviderConfig{
+				AuthorizeURL: "https://sso.acme.com/a", TokenURL: "https://sso.acme.com/t", UserinfoURL: "https://sso.acme.com/u",
+			},
+			// Device.Custom credentials intentionally left empty.
+		})
+		if svc.IsProviderConfiguredForClient(OAuthClientTypeDevice, hubclient.OAuthProviderCustom) {
+			t.Fatal("expected false: endpoint URLs set but credentials are not")
+		}
+	})
+
+	t.Run("both set", func(t *testing.T) {
+		svc := NewOAuthService(OAuthConfig{
+			Custom: OAuthCustomProviderConfig{
+				AuthorizeURL: "https://sso.acme.com/a", TokenURL: "https://sso.acme.com/t", UserinfoURL: "https://sso.acme.com/u",
+			},
+			Web: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "id", ClientSecret: "sec"}},
+		})
+		if !svc.IsProviderConfiguredForClient(OAuthClientTypeWeb, hubclient.OAuthProviderCustom) {
+			t.Fatal("expected true: both credentials and endpoint URLs are set")
+		}
+	})
+}
+
 func TestCustomProviderConfigDefaults(t *testing.T) {
 	c := &OAuthCustomProviderConfig{}
 	if c.IsConfigured() {

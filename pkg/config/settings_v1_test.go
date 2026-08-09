@@ -291,6 +291,45 @@ func TestLoadVersionedSettings_CLIEnvVars(t *testing.T) {
 	require.NotNil(t, vs.CLI)
 }
 
+// TestLoadVersionedSettings_CustomOAuthProviderEnvVars pins a regression: a
+// v1-path env override of a custom-provider *provider-level* key (as opposed
+// to a per-client-type credential key like client_id/client_secret) must land
+// on server.oauth.custom.<field>, not get silently misrouted to a sibling
+// dotted path that V1OAuthCustomProviderConfig doesn't have a field for.
+func TestLoadVersionedSettings_CustomOAuthProviderEnvVars(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	originalHome := os.Getenv("HOME")
+	defer func() { _ = os.Setenv("HOME", originalHome) }()
+	_ = os.Setenv("HOME", tmpDir)
+
+	projectDir := filepath.Join(tmpDir, "my-project", ".scion")
+	require.NoError(t, os.MkdirAll(projectDir, 0755))
+
+	_ = os.Setenv("SCION_SERVER_OAUTH_CUSTOM_AUTHORIZE_URL", "https://sso.acme.com/authorize")
+	defer func() { _ = os.Unsetenv("SCION_SERVER_OAUTH_CUSTOM_AUTHORIZE_URL") }()
+	_ = os.Setenv("SCION_SERVER_OAUTH_CUSTOM_TOKEN_URL", "https://sso.acme.com/token")
+	defer func() { _ = os.Unsetenv("SCION_SERVER_OAUTH_CUSTOM_TOKEN_URL") }()
+	_ = os.Setenv("SCION_SERVER_OAUTH_CUSTOM_USERINFO_URL", "https://sso.acme.com/userinfo")
+	defer func() { _ = os.Unsetenv("SCION_SERVER_OAUTH_CUSTOM_USERINFO_URL") }()
+	// device_authorization_url's first word ("device") collides with the
+	// oauth.device client-type section name — the case that broke without
+	// the knownCompoundFields fix.
+	_ = os.Setenv("SCION_SERVER_OAUTH_CUSTOM_DEVICE_AUTHORIZATION_URL", "https://sso.acme.com/device")
+	defer func() { _ = os.Unsetenv("SCION_SERVER_OAUTH_CUSTOM_DEVICE_AUTHORIZATION_URL") }()
+
+	vs, err := LoadVersionedSettings(projectDir)
+	require.NoError(t, err)
+
+	require.NotNil(t, vs.Server)
+	require.NotNil(t, vs.Server.OAuth)
+	require.NotNil(t, vs.Server.OAuth.Custom)
+	assert.Equal(t, "https://sso.acme.com/authorize", vs.Server.OAuth.Custom.AuthorizeURL)
+	assert.Equal(t, "https://sso.acme.com/token", vs.Server.OAuth.Custom.TokenURL)
+	assert.Equal(t, "https://sso.acme.com/userinfo", vs.Server.OAuth.Custom.UserinfoURL)
+	assert.Equal(t, "https://sso.acme.com/device", vs.Server.OAuth.Custom.DeviceAuthorizationURL)
+}
+
 func TestLoadVersionedSettings_JSONFallback(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -2127,6 +2166,17 @@ func TestVersionedEnvKeyMapper_DeepServerNesting(t *testing.T) {
 		{"SCION_SERVER_OAUTH_WEB_GOOGLE_CLIENT_ID", "server.oauth.web.google.client_id"},
 		{"SCION_SERVER_OAUTH_WEB_GOOGLE_CLIENT_SECRET", "server.oauth.web.google.client_secret"},
 		{"SCION_SERVER_OAUTH_CLI_GITHUB_CLIENT_ID", "server.oauth.cli.github.client_id"},
+		{"SCION_SERVER_OAUTH_WEB_CUSTOM_CLIENT_ID", "server.oauth.web.custom.client_id"},
+		// oauth.custom provider-level keys (not per-client-type credentials) —
+		// these are leaf fields on V1OAuthCustomProviderConfig, not nested sections.
+		{"SCION_SERVER_OAUTH_CUSTOM_AUTHORIZE_URL", "server.oauth.custom.authorize_url"},
+		{"SCION_SERVER_OAUTH_CUSTOM_TOKEN_URL", "server.oauth.custom.token_url"},
+		{"SCION_SERVER_OAUTH_CUSTOM_USERINFO_URL", "server.oauth.custom.userinfo_url"},
+		// device_authorization_url's first word collides with the oauth.device
+		// client-type section name; pins the knownCompoundFields fix for it.
+		{"SCION_SERVER_OAUTH_CUSTOM_DEVICE_AUTHORIZATION_URL", "server.oauth.custom.device_authorization_url"},
+		{"SCION_SERVER_OAUTH_CUSTOM_DISPLAY_NAME", "server.oauth.custom.display_name"},
+		{"SCION_SERVER_OAUTH_CUSTOM_EMAIL_CLAIM", "server.oauth.custom.email_claim"},
 		// Storage keys
 		{"SCION_SERVER_STORAGE_PROVIDER", "server.storage.provider"},
 		{"SCION_SERVER_STORAGE_LOCAL_PATH", "server.storage.local_path"},

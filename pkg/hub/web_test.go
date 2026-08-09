@@ -2167,6 +2167,34 @@ func TestAuthProvidersIncludesCustom(t *testing.T) {
 	assert.Equal(t, true, result["custom"])
 	assert.Equal(t, "Acme SSO", result["customDisplayName"])
 	assert.Equal(t, false, result["google"])
+	assert.Equal(t, false, result["github"])
+}
+
+// TestAuthProvidersCustomCredsOnlyNotConfigured pins the AND in
+// IsProviderConfiguredForClient: custom credentials alone (no provider-level
+// endpoint URLs) must NOT surface the provider — "custom" stays false and
+// "customDisplayName" is omitted entirely, matching handleAuthProviders'
+// only-set-when-configured behavior.
+func TestAuthProvidersCustomCredsOnlyNotConfigured(t *testing.T) {
+	ws := newTestWebServer(t, WebServerConfig{})
+	ws.SetOAuthService(NewOAuthService(OAuthConfig{
+		// Custom (provider-level endpoint URLs) intentionally left empty.
+		Web: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "cid", ClientSecret: "sec"}},
+	}))
+
+	req := httptest.NewRequest("GET", "/auth/providers", nil)
+	rec := httptest.NewRecorder()
+	ws.Handler().ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	body, _ := io.ReadAll(resp.Body)
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(body, &result))
+	assert.Equal(t, false, result["custom"])
+	_, hasDisplayName := result["customDisplayName"]
+	assert.False(t, hasDisplayName, "customDisplayName should be omitted when custom is not configured")
 }
 
 // --- SSR Prefetch Tests ---

@@ -1087,6 +1087,13 @@ func versionedEnvKeyMapper(s string) string {
 var knownCompoundFields = []string{
 	"require_trusted_proxy_ip",
 	"soft_delete_retain_files",
+	// device_authorization_url is a leaf field of oauth.custom (see
+	// V1OAuthCustomProviderConfig), but its first word "device" collides with
+	// the oauth.device client-type section name, so without this entry
+	// mapEnvKeyRecursive would misread it as a "device" section nested under
+	// oauth.custom and produce oauth.custom.device.authorization_url instead
+	// of the correct oauth.custom.device_authorization_url.
+	"device_authorization_url",
 	"soft_delete_retention",
 	"stalled_threshold",
 	"authorized_domains",
@@ -1187,7 +1194,7 @@ func mapEnvKeyRecursive(key string) string {
 func isSectionName(name string) bool {
 	switch name {
 	case "hub", "broker", "database", "auth", "oauth", "storage", "secrets", "cors",
-		"web", "cli", "device", "google", "github", "proxy", "iap", "transport",
+		"web", "cli", "device", "google", "github", "custom", "proxy", "iap", "transport",
 		"scheduler":
 		return true
 	}

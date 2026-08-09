@@ -389,15 +389,22 @@ func (s *OAuthService) getCustomAuthorizationURL(cfg OAuthProviderConfig, callba
 		return "", fmt.Errorf("custom OAuth provider is not configured")
 	}
 
-	params := url.Values{
-		"client_id":     {cfg.ClientID},
-		"redirect_uri":  {callbackURL},
-		"response_type": {"code"},
-		"scope":         {s.config.Custom.EffectiveScopes()},
-		"state":         {state},
+	// Parse (rather than string-concatenate) so pre-existing query parameters
+	// on operator-supplied authorize URLs survive — e.g. Azure AD B2C's
+	// "?p=<policy>" tenant policy parameter.
+	u, err := url.Parse(s.config.Custom.AuthorizeURL)
+	if err != nil {
+		return "", fmt.Errorf("custom OAuth authorize URL is invalid: %w", err)
 	}
+	q := u.Query()
+	q.Set("client_id", cfg.ClientID)
+	q.Set("redirect_uri", callbackURL)
+	q.Set("response_type", "code")
+	q.Set("scope", s.config.Custom.EffectiveScopes())
+	q.Set("state", state)
+	u.RawQuery = q.Encode()
 
-	return s.config.Custom.AuthorizeURL + "?" + params.Encode(), nil
+	return u.String(), nil
 }
 
 // ExchangeCode exchanges an authorization code for user information.
@@ -490,6 +497,9 @@ func (s *OAuthService) exchangeCustomCodeWithConfig(ctx context.Context, cfg OAu
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange custom code: %w", err)
 	}
+	if tokenResp.AccessToken == "" {
+		return nil, fmt.Errorf("custom token endpoint returned no access_token")
+	}
 
 	// Get user info
 	userInfo, err := s.getCustomUserInfo(ctx, tokenResp.AccessToken)
@@ -524,6 +534,9 @@ func (s *OAuthService) exchangeCodeForToken(ctx context.Context, tokenURL, clien
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Harmless for RFC-compliant servers; required by GitHub-style endpoints
+	// that otherwise respond with application/x-www-form-urlencoded.
+	req.Header.Set("Accept", "application/json")
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
@@ -532,7 +545,7 @@ func (s *OAuthService) exchangeCodeForToken(ctx context.Context, tokenURL, clien
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("token exchange failed: %s - %s", resp.Status, string(body))
 	}
 

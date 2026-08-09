@@ -611,11 +611,45 @@ func TestCustomAuthorizationURL(t *testing.T) {
 	}
 }
 
+func TestCustomAuthorizationURLPreservesExistingQuery(t *testing.T) {
+	// Azure AD B2C-style authorize URLs carry a tenant policy parameter
+	// (?p=B2C_1_signin) that must survive alongside the standard OAuth params.
+	svc := NewOAuthService(OAuthConfig{
+		Custom: OAuthCustomProviderConfig{
+			AuthorizeURL: "https://tenant.b2clogin.com/tenant/oauth2/v2.0/authorize?p=B2C_1_signin",
+			TokenURL:     "https://tenant.b2clogin.com/tenant/oauth2/v2.0/token",
+			UserinfoURL:  "https://tenant.b2clogin.com/tenant/openid/userinfo",
+		},
+		Web: OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "cid", ClientSecret: "sec"}},
+	})
+	got, err := svc.GetAuthorizationURLForClient(OAuthClientTypeWeb, hubclient.OAuthProviderCustom, "https://hub.example/cb", "state123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("result is not a valid URL: %v (%s)", err, got)
+	}
+	q := u.Query()
+	if q.Get("p") != "B2C_1_signin" {
+		t.Fatalf("pre-existing query param %q dropped: %s", "p", got)
+	}
+	if q.Get("client_id") != "cid" || q.Get("redirect_uri") != "https://hub.example/cb" || q.Get("response_type") != "code" || q.Get("scope") != "openid email profile" || q.Get("state") != "state123" {
+		t.Fatalf("params = %v", q)
+	}
+}
+
 func TestCustomExchangeAndUserinfo(t *testing.T) {
 	var gotTokenReq url.Values
 	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/token":
+			// GitHub-style endpoints only return JSON when asked; pin that
+			// exchangeCodeForToken sends Accept: application/json.
+			if r.Header.Get("Accept") != "application/json" {
+				w.WriteHeader(http.StatusNotAcceptable)
+				return
+			}
 			_ = r.ParseForm()
 			gotTokenReq = r.PostForm
 			w.Header().Set("Content-Type", "application/json")
@@ -641,7 +675,9 @@ func TestCustomExchangeAndUserinfo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotTokenReq.Get("grant_type") != "authorization_code" || gotTokenReq.Get("code") != "code-1" || gotTokenReq.Get("client_id") != "cid" {
+	if gotTokenReq.Get("grant_type") != "authorization_code" || gotTokenReq.Get("code") != "code-1" ||
+		gotTokenReq.Get("client_id") != "cid" || gotTokenReq.Get("client_secret") != "sec" ||
+		gotTokenReq.Get("redirect_uri") != "https://hub.example/cb" {
 		t.Fatalf("token request = %v", gotTokenReq)
 	}
 	if info.ID != "u-9" || info.Email != "jordan@acme.com" || info.DisplayName != "Jordan" || info.AvatarURL != "https://img" || info.Provider != "custom" {
@@ -665,7 +701,54 @@ func TestCustomUserinfoMissingEmailFails(t *testing.T) {
 		Custom: OAuthCustomProviderConfig{AuthorizeURL: idp.URL + "/a", TokenURL: idp.URL + "/token", UserinfoURL: idp.URL + "/me"},
 		Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "cid", ClientSecret: "sec"}},
 	})
-	if _, err := svc.ExchangeCodeForClient(context.Background(), OAuthClientTypeWeb, hubclient.OAuthProviderCustom, "code-1", "https://hub.example/cb"); err == nil {
+	_, err := svc.ExchangeCodeForClient(context.Background(), OAuthClientTypeWeb, hubclient.OAuthProviderCustom, "code-1", "https://hub.example/cb")
+	if err == nil {
 		t.Fatal("expected error for missing email claim, got nil")
+	}
+	if !strings.Contains(err.Error(), "email") {
+		t.Fatalf("error should name the configured email claim key %q, got: %v", "email", err)
+	}
+}
+
+func TestCustomExchangeEmptyAccessTokenFails(t *testing.T) {
+	userinfoCalled := false
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token_type":"Bearer"}`)) // no access_token
+		case "/me":
+			userinfoCalled = true
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"sub":"u-9","email":"jordan@acme.com"}`))
+		}
+	}))
+	defer idp.Close()
+	svc := NewOAuthService(OAuthConfig{
+		Custom: OAuthCustomProviderConfig{AuthorizeURL: idp.URL + "/a", TokenURL: idp.URL + "/token", UserinfoURL: idp.URL + "/me"},
+		Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "cid", ClientSecret: "sec"}},
+	})
+	if _, err := svc.ExchangeCodeForClient(context.Background(), OAuthClientTypeWeb, hubclient.OAuthProviderCustom, "code-1", "https://hub.example/cb"); err == nil {
+		t.Fatal("expected error for empty access_token, got nil")
+	}
+	if userinfoCalled {
+		t.Fatal("userinfo endpoint must not be called when the token endpoint returns no access_token")
+	}
+}
+
+func TestCustomTokenEndpointErrorFails(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("internal error"))
+		}
+	}))
+	defer idp.Close()
+	svc := NewOAuthService(OAuthConfig{
+		Custom: OAuthCustomProviderConfig{AuthorizeURL: idp.URL + "/a", TokenURL: idp.URL + "/token", UserinfoURL: idp.URL + "/me"},
+		Web:    OAuthClientConfig{Custom: OAuthProviderConfig{ClientID: "cid", ClientSecret: "sec"}},
+	})
+	if _, err := svc.ExchangeCodeForClient(context.Background(), OAuthClientTypeWeb, hubclient.OAuthProviderCustom, "code-1", "https://hub.example/cb"); err == nil {
+		t.Fatal("expected error for non-2xx token endpoint response, got nil")
 	}
 }

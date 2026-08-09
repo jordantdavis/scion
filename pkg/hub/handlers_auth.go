@@ -114,7 +114,7 @@ type AuthLogoutResponse struct {
 type CLIAuthAuthorizeRequest struct {
 	CallbackURL string `json:"callbackUrl"`
 	State       string `json:"state"`
-	Provider    string `json:"provider,omitempty"` // "google" (default) or "github"
+	Provider    string `json:"provider,omitempty"` // "google" (default), "github", or "custom"
 }
 
 // CLIAuthProvidersResponse is the response for GET /api/v1/auth/providers.
@@ -132,7 +132,7 @@ type CLIAuthAuthorizeResponse struct {
 type CLIAuthTokenRequest struct {
 	Code        string `json:"code"`
 	CallbackURL string `json:"callbackUrl"`
-	Provider    string `json:"provider,omitempty"` // "google" (default) or "github"
+	Provider    string `json:"provider,omitempty"` // "google" (default), "github", or "custom"
 }
 
 // CLIAuthTokenResponse is the response for /api/v1/auth/cli/token.

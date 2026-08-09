@@ -533,7 +533,8 @@ type tokenResponse struct {
 	Scope        string `json:"scope"`
 }
 
-// exchangeCodeForToken exchanges an authorization code for an access token (Google).
+// exchangeCodeForToken exchanges an authorization code for an access token.
+// Shared by the Google and custom provider flows.
 func (s *OAuthService) exchangeCodeForToken(ctx context.Context, tokenURL, clientID, clientSecret, code, callbackURL string) (*tokenResponse, error) {
 	data := url.Values{
 		"grant_type":    {"authorization_code"},
@@ -814,6 +815,9 @@ func (s *OAuthService) getCustomUserInfo(ctx context.Context, accessToken string
 		return nil, fmt.Errorf("custom userinfo response missing email claim %q", emailClaim)
 	}
 
+	// "sub" is hardcoded, not mapped via a *_claim setting like email/name/avatar:
+	// the ID isn't the join key for identity (email is), so it doesn't need to be
+	// configurable per IdP.
 	id := claim("sub")
 	if id == "" {
 		id = email

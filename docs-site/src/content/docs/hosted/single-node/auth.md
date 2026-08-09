@@ -72,7 +72,7 @@ export SCION_SERVER_OAUTH_CLI_GITHUB_CLIENTID="your-client-id"
 export SCION_SERVER_OAUTH_CLI_GITHUB_CLIENTSECRET="your-client-secret"
 ```
 
-### Custom OAuth provider (corporate SSO)
+### Custom OAuth Provider (Corporate SSO)
 
 Scion also supports a third, config-driven OAuth 2.0 provider — fixed ID `custom` — for
 organizations running their own SSO (Okta, Entra ID, Keycloak, Auth0, or a homegrown
@@ -85,7 +85,15 @@ just needs the resolved endpoints.
 #### Configuration
 
 Add an `oauth.custom` block to `settings.yaml`, alongside credentials for whichever
-clients (web, CLI, device) you want to support:
+clients (web, CLI, device) you want to support.
+
+The `custom` provider only appears (in `/auth/providers`, the login page, and the
+CLI's provider list) once **both** of the following are true: the three endpoint
+URLs (`authorize_url`, `token_url`, `userinfo_url`) are set under `oauth.custom`,
+**and** a non-empty `client_id`/`client_secret` pair exists for that client type
+under `oauth.<web|cli|device>.custom`. If either half is missing, the provider is
+silently inactive — no startup error and no log line — so double-check both halves
+are filled in for each client type you intend to support:
 
 ```yaml
 server:
@@ -101,11 +109,11 @@ server:
       name_claim: "name"
       avatar_claim: "picture"
     web:
-      custom: { client_id: "", client_secret: "" }
+      custom: { client_id: "<your-client-id>", client_secret: "<your-client-secret>" }
     cli:
-      custom: { client_id: "", client_secret: "" }
+      custom: { client_id: "<your-client-id>", client_secret: "<your-client-secret>" }
     device:
-      custom: { client_id: "", client_secret: "" }           # only needed if device_authorization_url is set
+      custom: { client_id: "<your-client-id>", client_secret: "<your-client-secret>" } # only needed if device_authorization_url is set
 ```
 
 As with Google/GitHub, client secrets should not be committed to `settings.yaml` — set
@@ -172,6 +180,11 @@ CLI-localhost-callback flows.
 
 The `userinfo_url` is trust-critical: whoever controls hub configuration controls who can
 authenticate. Treat hub config with the same care as the IdP itself.
+
+Because Scion keys accounts by email address, this also matters when `custom` is
+configured alongside Google/GitHub: any identity provider you point `userinfo_url`
+at can authenticate as any existing user with a matching email — including
+administrators. Only configure an IdP you trust to verify email ownership.
 
 ## Domain Authorization
 
